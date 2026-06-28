@@ -37,7 +37,7 @@ export function LoginClient() {
     }
   }
 
-  async function useDemo(userId: string) {
+  async function loginDemo(userId: string) {
     setLoading(true);
     setError('');
     try {
@@ -72,7 +72,7 @@ export function LoginClient() {
             <div className="login-divider">lub demo</div>
             <div className="demo-list">
               {demoUsers.map((user) => (
-                <button key={user.id} className="demo-btn" disabled={loading} onClick={() => void useDemo(user.id)}>
+                <button key={user.id} className="demo-btn" disabled={loading} onClick={() => void loginDemo(user.id)}>
                   {user.label}
                 </button>
               ))}
