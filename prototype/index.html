@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SPAN — Timeline</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-main">
+      <div class="brand-row">
+        <img class="brand-logo" src="../assets/span-logo.svg" alt="SPAN" />
+        <div class="brand-claim-wrap">
+          <span class="brand-separator">|</span>
+          <span class="brand-claim">Jira mówi, co trzeba zrobić. SPAN pokazuje, kiedy.</span>
+        </div>
+      </div>
+      <button class="secondary topbar-settings icon-btn" id="settingsBtn" aria-label="Ustawienia" title="Ustawienia">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M9.67 4.14a2.34 2.34 0 0 1 4.66 0 2.34 2.34 0 0 0 3.32 1.91 2.34 2.34 0 0 1 2.33 4.04 2.34 2.34 0 0 0 0 3.82 2.34 2.34 0 0 1-2.33 4.04 2.34 2.34 0 0 0-3.32 1.91 2.34 2.34 0 0 1-4.66 0 2.34 2.34 0 0 0-3.32-1.91 2.34 2.34 0 0 1-2.33-4.04 2.34 2.34 0 0 0 0-3.82 2.34 2.34 0 0 1 2.33-4.04 2.34 2.34 0 0 0 3.32-1.91Z" />
+        </svg>
+      </button>
+    </div>
+
+    <div class="topbar-controls">
+      <div class="controls-left">
+        <button class="secondary jira-btn" id="syncBtn">Import z Jiry</button>
+        <button class="add-btn" id="quickAddBtn">+ Dodaj blok</button>
+      </div>
+      <div class="controls-right">
+        <div class="week-switch" aria-label="Przełącznik tygodnia">
+          <button class="secondary nav-btn" id="prevWeekBtn" aria-label="Poprzedni tydzień">‹</button>
+          <div class="week-range mono" id="weekRangeLabel"></div>
+          <button class="secondary nav-btn" id="nextWeekBtn" aria-label="Następny tydzień">›</button>
+        </div>
+        <button class="secondary today-btn" id="todayBtn">Dzisiaj</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <aside>
+      <div class="collapsed">
+        <button class="collapse" id="expandSidebarBtn">›</button>
+        <div class="vertical">BACKLOG</div>
+      </div>
+
+      <div class="sidebar-content">
+        <div class="side-head">
+          <div>
+            <div class="mono">Backlog</div>
+            <h2>Taski do zaplanowania</h2>
+            <div class="hint">Taski z Jiry i ręczne. Kolor = epic.</div>
+          </div>
+          <button class="collapse" id="collapseSidebarBtn">‹</button>
+        </div>
+
+        <div class="section">
+          <div class="inline">
+            <input id="manualTaskTitle" placeholder="Nowy task" style="min-width:0;flex:1" />
+            <select id="manualTaskCategory" style="max-width:118px"></select>
+            <button id="addManualTaskBtn">+</button>
+          </div>
+        </div>
+
+        <div class="pool" id="taskPool"></div>
+      </div>
+    </aside>
+
+    <section class="planner-wrap" id="plannerWrap">
+      <div class="planner" id="planner"></div>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog">
+    <div class="modal-head">
+      <div>
+        <div class="mono">Ustawienia</div>
+        <h2>Pracownicy, epiki i Jira</h2>
+      </div>
+      <button class="secondary" id="closeSettingsBtn">Zamknij</button>
+    </div>
+
+    <div class="modal-section">
+      <h2>Pracownicy</h2>
+      <div class="inline" style="margin-top:10px">
+        <input id="employeeName" placeholder="Imię" />
+        <button id="addEmployeeBtn">Dodaj pracownika</button>
+      </div>
+      <div id="employeeList" style="margin-top:10px;display:grid;gap:6px"></div>
+    </div>
+
+    <div class="modal-section">
+      <h2>Epiki / kolory</h2>
+      <div class="hint" style="margin:6px 0 10px">
+        W produkcji epiki przyjdą z Jiry. Tutaj możesz je dodać ręcznie.
+      </div>
+      <div class="inline">
+        <input id="categoryName" placeholder="Nazwa epica" />
+        <input id="categoryColor" type="color" value="#4A7FF8" />
+        <button id="addCategoryBtn">Dodaj epic</button>
+      </div>
+      <div class="legend" id="legend" style="margin-top:12px"></div>
+    </div>
+
+    <div class="modal-section">
+      <h2>Jira</h2>
+      <div class="hint" style="margin:6px 0 10px">
+        JQL, czyli filtr pobierania tasków z Jiry.
+      </div>
+      <input id="jiraQuery" style="width:100%" value="project = MV AND status != Done" />
+    </div>
+  </dialog>
+</body>
+</html>

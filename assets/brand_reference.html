@@ -1,0 +1,334 @@
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+
+  .bi { font-family: 'DM Sans', sans-serif; max-width: 740px; margin: 0 auto; padding: 1.5rem 0; }
+  .section { margin-bottom: 2.5rem; }
+  .slabel { font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-tertiary); margin-bottom: 1rem; font-weight: 500; padding-bottom: 8px; border-bottom: 0.5px solid var(--color-border-tertiary); }
+
+  .logo-stage { background: #F5F3EE; border-radius: 20px; padding: 2rem; display: flex; align-items: center; justify-content: space-around; flex-wrap: wrap; gap: 2rem; }
+  .logo-var { text-align: center; }
+  .logo-sublabel { font-size: 10px; color: #9a9890; margin-top: 8px; font-family: 'DM Mono', monospace; }
+
+  .pal-grid { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 10px; }
+  .swatch { border-radius: 14px; overflow: hidden; }
+  .sw-color { height: 60px; }
+  .sw-info { padding: 8px 10px; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-top: none; border-radius: 0 0 14px 14px; }
+  .sw-name { font-size: 12px; font-weight: 500; color: var(--color-text-primary); }
+  .sw-hex { font-size: 10px; color: var(--color-text-tertiary); font-family: 'DM Mono', monospace; }
+  .sw-role { font-size: 10px; color: var(--color-text-tertiary); }
+
+  .type-stack { display: flex; flex-direction: column; gap: 10px; }
+  .type-card { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: 16px; padding: 1rem 1.25rem; }
+  .type-meta { font-size: 10px; color: var(--color-text-tertiary); margin-bottom: 6px; font-family: 'DM Mono', monospace; }
+
+  .ui-frame { background: #F0EDE6; border-radius: 24px; padding: 2px; }
+  .ui-inner { background: #FAFAF8; border-radius: 22px; overflow: hidden; }
+  .ui-bar { background: #FAFAF8; padding: 12px 20px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 0.5px solid #EAE8E2; }
+  .ui-logo-row { display: flex; align-items: center; gap: 8px; }
+  .ui-logotype { font-size: 17px; font-weight: 600; color: #1A1916; letter-spacing: -0.03em; font-family: 'DM Sans', sans-serif; }
+  .ui-ws-pill { background: #EDE9E1; border-radius: 20px; padding: 4px 12px; font-size: 11px; color: #6B6860; font-family: 'DM Mono', monospace; }
+
+  .ui-body { padding: 20px; }
+
+  .ui-greeting { background: #F0EDE6; border-radius: 20px; padding: 20px; margin-bottom: 16px; position: relative; overflow: hidden; min-height: 160px; }
+  .ui-greeting-text { position: relative; z-index: 2; }
+  .ui-greeting-eyebrow { font-size: 11px; color: #9A9890; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; font-family: 'DM Mono', monospace; }
+  .ui-greeting-h { font-size: 22px; font-weight: 600; color: #1A1916; line-height: 1.2; letter-spacing: -0.02em; margin-bottom: 12px; }
+  .ui-chips-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ui-chip { background: white; border-radius: 20px; padding: 6px 14px; font-size: 12px; color: #1A1916; border: 0.5px solid #D8D5CE; }
+  .ui-aura { position: absolute; bottom: -30px; right: -20px; width: 180px; height: 130px; border-radius: 50% 30% 60% 40%; z-index: 1; }
+
+  .ui-scores { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; margin-bottom: 16px; }
+  .ui-sc { background: white; border-radius: 16px; padding: 14px 12px; text-align: center; border: 0.5px solid #EAE8E2; }
+  .ui-sc-num { font-size: 32px; font-weight: 600; line-height: 1; margin-bottom: 4px; letter-spacing: -0.03em; }
+  .ui-sc-bar { width: 100%; height: 3px; background: #EAE8E2; border-radius: 2px; margin-bottom: 6px; }
+  .ui-sc-fill { height: 100%; border-radius: 2px; }
+  .ui-sc-label { font-size: 10px; color: #9A9890; letter-spacing: 0.06em; text-transform: uppercase; font-family: 'DM Mono', monospace; }
+
+  .ui-verdict { background: white; border-radius: 16px; padding: 16px; margin-bottom: 16px; border: 0.5px solid #EAE8E2; }
+  .ui-verdict-label { font-size: 10px; color: #9A9890; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 8px; font-family: 'DM Mono', monospace; }
+  .ui-verdict-text { font-size: 14px; color: #3A3834; line-height: 1.65; }
+  .ui-verdict-text .hl { color: #4A7FF8; font-weight: 500; }
+
+  .ui-persona-list { display: flex; flex-direction: column; gap: 8px; }
+  .ui-persona { background: white; border-radius: 16px; padding: 12px 14px; display: flex; align-items: center; gap: 12px; border: 0.5px solid #EAE8E2; }
+  .ui-p-avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; flex-shrink: 0; color: white; }
+  .ui-p-name { font-size: 13px; font-weight: 600; color: #1A1916; }
+  .ui-p-role { font-size: 11px; color: #9A9890; }
+  .ui-p-right { margin-left: auto; text-align: right; }
+  .ui-p-score { font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+  .ui-p-conv { font-size: 10px; color: #9A9890; font-family: 'DM Mono', monospace; }
+
+  .ui-sidebar-ws { display: flex; flex-direction: column; gap: 6px; }
+  .ui-ws-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; }
+  .ui-ws-row.active { background: #EDE9E1; }
+  .ui-ws-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .ui-ws-name-t { font-size: 12px; color: #6B6860; }
+  .ui-ws-row.active .ui-ws-name-t { color: #1A1916; font-weight: 500; }
+</style>
+
+<div class="bi">
+
+  <div class="section">
+    <div class="slabel">Logo & ikona</div>
+    <div class="logo-stage">
+
+      <div class="logo-var">
+        <svg width="130" height="44" viewBox="0 0 130 44" fill="none">
+          <rect x="0" y="4" width="36" height="36" rx="10" fill="#4A7FF8"/>
+          <circle cx="18" cy="22" r="9" fill="none" stroke="white" stroke-width="2"/>
+          <circle cx="18" cy="22" r="4" fill="white"/>
+          <text x="46" y="28" font-family="DM Sans, sans-serif" font-size="22" font-weight="600" fill="#1A1916" letter-spacing="-0.5">Proba</text>
+        </svg>
+        <div class="logo-sublabel">pełne logo</div>
+      </div>
+
+      <div class="logo-var">
+        <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+          <rect width="56" height="56" rx="14" fill="url(#grad1)"/>
+          <circle cx="28" cy="28" r="12" fill="none" stroke="white" stroke-width="2.5"/>
+          <circle cx="28" cy="28" r="5.5" fill="white"/>
+          <defs>
+            <linearGradient id="grad1" x1="0" y1="0" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#4A7FF8"/>
+              <stop offset="0.5" stop-color="#FF7648"/>
+              <stop offset="1" stop-color="#FFC757"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <div class="logo-sublabel">ikona app (gradient)</div>
+      </div>
+
+      <div class="logo-var" style="background:#1A1916; padding:16px 24px; border-radius:16px;">
+        <svg width="110" height="36" viewBox="0 0 110 36" fill="none">
+          <circle cx="15" cy="18" r="12" fill="none" stroke="#4A7FF8" stroke-width="2"/>
+          <circle cx="15" cy="18" r="5" fill="#4A7FF8"/>
+          <text x="34" y="24" font-family="DM Sans, sans-serif" font-size="20" font-weight="600" fill="white" letter-spacing="-0.5">Proba</text>
+        </svg>
+        <div class="logo-sublabel" style="color:#444;">na ciemnym tle</div>
+      </div>
+
+      <div class="logo-var">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <circle cx="18" cy="18" r="12" fill="none" stroke="#4A7FF8" stroke-width="2"/>
+          <circle cx="18" cy="18" r="5" fill="#4A7FF8"/>
+        </svg>
+        <div class="logo-sublabel">symbol / favicon</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="slabel">Paleta kolorów</div>
+    <div class="pal-grid">
+      <div class="swatch">
+        <div class="sw-color" style="background:#4A7FF8;"></div>
+        <div class="sw-info">
+          <div class="sw-name">Blue</div>
+          <div class="sw-hex">#4A7FF8</div>
+          <div class="sw-role">primary / akcent</div>
+        </div>
+      </div>
+      <div class="swatch">
+        <div class="sw-color" style="background:#FF7648;"></div>
+        <div class="sw-info">
+          <div class="sw-name">Coral</div>
+          <div class="sw-hex">#FF7648</div>
+          <div class="sw-role">energia / ryzyko</div>
+        </div>
+      </div>
+      <div class="swatch">
+        <div class="sw-color" style="background:#FFC757;"></div>
+        <div class="sw-info">
+          <div class="sw-name">Amber</div>
+          <div class="sw-hex">#FFC757</div>
+          <div class="sw-role">szansa / uwaga</div>
+        </div>
+      </div>
+      <div class="swatch">
+        <div class="sw-color" style="background:#F0EDE6; border: 0.5px solid #ddd;"></div>
+        <div class="sw-info">
+          <div class="sw-name">Cream</div>
+          <div class="sw-hex">#F0EDE6</div>
+          <div class="sw-role">tło / powierzchnie</div>
+        </div>
+      </div>
+      <div class="swatch">
+        <div class="sw-color" style="background:#1A1916;"></div>
+        <div class="sw-info">
+          <div class="sw-name">Ink</div>
+          <div class="sw-hex">#1A1916</div>
+          <div class="sw-role">tekst / ciemne tło</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top: 10px; background: #F0EDE6; border-radius: 14px; padding: 14px 16px; display: flex; align-items: center; gap: 12px;">
+      <svg width="100" height="40" viewBox="0 0 100 40" fill="none">
+        <ellipse cx="30" cy="30" rx="40" ry="28" fill="#4A7FF8" opacity="0.5"/>
+        <ellipse cx="55" cy="25" rx="35" ry="24" fill="#FF7648" opacity="0.45"/>
+        <ellipse cx="70" cy="32" rx="30" ry="20" fill="#FFC757" opacity="0.5"/>
+      </svg>
+      <div>
+        <div style="font-size: 12px; font-weight: 500; color: #1A1916; margin-bottom: 3px;">Aura — sygnatura wizualna Proba</div>
+        <div style="font-size: 11px; color: #6B6860; line-height: 1.5;">Trzy kolory nakładające się jako dekoracyjny element tła. Pojawia się w: onboardingu, ekranie głównym, tle wyników. Symbolizuje nakładające się reakcje person.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="slabel">Typografia — DM Sans</div>
+    <div class="type-stack">
+      <div class="type-card">
+        <div class="type-meta">Display — DM Sans 600 — 32px — letter-spacing -0.03em</div>
+        <div style="font-family:'DM Sans',sans-serif; font-size:32px; font-weight:600; color:var(--color-text-primary); letter-spacing:-0.03em; line-height:1.1;">Run a proba<br>before you launch.</div>
+      </div>
+      <div class="type-card">
+        <div class="type-meta">UI Header — DM Sans 600 — 18px</div>
+        <div style="font-family:'DM Sans',sans-serif; font-size:18px; font-weight:600; color:var(--color-text-primary); letter-spacing:-0.02em;">Wyniki symulacji · Hook wideo · 4 persony</div>
+      </div>
+      <div class="type-card">
+        <div class="type-meta">Body / Verdict — DM Sans 400 — 14px — line-height 1.65</div>
+        <div style="font-family:'DM Sans',sans-serif; font-size:14px; color:var(--color-text-secondary); line-height:1.65;">Ten hook zatrzyma <span style="color:#4A7FF8; font-weight:500;">Zosię</span> na 2 sekundy — ale <span style="color:#FF7648; font-weight:500;">Kacper</span> przewinie. Zmień pierwsze zdanie na konkretną liczbę.</div>
+      </div>
+      <div class="type-card">
+        <div class="type-meta">Labels / Tags — DM Mono 400 — 10px — uppercase</div>
+        <div style="font-family:'DM Mono',monospace; font-size:10px; color:var(--color-text-tertiary); letter-spacing:0.14em; text-transform:uppercase;">Hook wideo · 4 persony · KOMBINI · Próba #24</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="slabel">UI screen — wyniki analizy</div>
+
+    <div class="ui-frame">
+      <div class="ui-inner">
+        <div class="ui-bar">
+          <div class="ui-logo-row">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="8" fill="none" stroke="#4A7FF8" stroke-width="2"/>
+              <circle cx="12" cy="12" r="3.5" fill="#4A7FF8"/>
+            </svg>
+            <div class="ui-logotype">Proba</div>
+          </div>
+          <div class="ui-ws-pill">KOMBINI / Matchomaty</div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 160px 1fr;">
+
+          <div style="background:#F5F3EE; padding:16px 12px; border-right:0.5px solid #EAE8E2;">
+            <div style="font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:#9A9890; margin-bottom:10px; font-family:'DM Mono',monospace;">Workspace'y</div>
+            <div class="ui-sidebar-ws">
+              <div class="ui-ws-row active">
+                <div class="ui-ws-dot" style="background:#4A7FF8;"></div>
+                <span class="ui-ws-name-t">KOMBINI</span>
+              </div>
+              <div class="ui-ws-row">
+                <div class="ui-ws-dot" style="background:#5B9E6A;"></div>
+                <span class="ui-ws-name-t">Mobile Vikings</span>
+              </div>
+              <div class="ui-ws-row">
+                <div class="ui-ws-dot" style="background:#9A7ABA;"></div>
+                <span class="ui-ws-name-t">Content wideo</span>
+              </div>
+              <div class="ui-ws-row">
+                <div class="ui-ws-dot" style="background:#BA7A5A;"></div>
+                <span class="ui-ws-name-t">Cyrulicy</span>
+              </div>
+            </div>
+            <div style="height:0.5px; background:#EAE8E2; margin:12px 0;"></div>
+            <div style="font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:#9A9890; margin-bottom:10px; font-family:'DM Mono',monospace;">Ostatnie</div>
+            <div style="font-size:11px; color:#1A1916; padding:4px 10px; background:white; border-radius:10px; margin-bottom:5px;">Hook — matcha 12zł</div>
+            <div style="font-size:11px; color:#9A9890; padding:4px 10px; margin-bottom:5px;">Cena — zmiana 16zł</div>
+            <div style="font-size:11px; color:#9A9890; padding:4px 10px;">Kampania — launch</div>
+          </div>
+
+          <div class="ui-body">
+
+            <div class="ui-greeting">
+              <div class="ui-greeting-text">
+                <div class="ui-greeting-eyebrow">Próba #24 · Hook wideo</div>
+                <div class="ui-greeting-h">"Automat z matchą<br>który zmienia poranek"</div>
+                <div class="ui-chips-row">
+                  <div class="ui-chip" style="background:#EEF3FF; color:#4A7FF8; border-color:#C8D8FC;">4 persony</div>
+                  <div class="ui-chip">dziś 14:32</div>
+                </div>
+              </div>
+              <div class="ui-aura">
+                <svg width="180" height="130" viewBox="0 0 180 130" fill="none">
+                  <ellipse cx="60" cy="90" rx="80" ry="60" fill="#4A7FF8" opacity="0.25"/>
+                  <ellipse cx="110" cy="75" rx="70" ry="55" fill="#FF7648" opacity="0.25"/>
+                  <ellipse cx="140" cy="95" rx="60" ry="45" fill="#FFC757" opacity="0.3"/>
+                </svg>
+              </div>
+            </div>
+
+            <div class="ui-scores">
+              <div class="ui-sc">
+                <div class="ui-sc-num" style="color:#4A7FF8;">8.2</div>
+                <div class="ui-sc-bar"><div class="ui-sc-fill" style="width:82%; background:#4A7FF8;"></div></div>
+                <div class="ui-sc-label">Ogólna</div>
+              </div>
+              <div class="ui-sc">
+                <div class="ui-sc-num" style="color:#FFC757;">7.4</div>
+                <div class="ui-sc-bar"><div class="ui-sc-fill" style="width:74%; background:#FFC757;"></div></div>
+                <div class="ui-sc-label">Hook</div>
+              </div>
+              <div class="ui-sc">
+                <div class="ui-sc-num" style="color:#4A7FF8;">9.1</div>
+                <div class="ui-sc-bar"><div class="ui-sc-fill" style="width:91%; background:#4A7FF8;"></div></div>
+                <div class="ui-sc-label">Emocje</div>
+              </div>
+            </div>
+
+            <div class="ui-verdict">
+              <div class="ui-verdict-label">Werdykt</div>
+              <div class="ui-verdict-text">Silny hook emocjonalny — <span class="hl">Zosia zostaje</span>, ale <span style="color:#FF7648; font-weight:500;">Kacper przewija</span>. Brakuje liczby w pierwszych 3 sekundach. Jedna zmiana podniesie score o ~1.5 punktu.</div>
+            </div>
+
+            <div style="font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:#9A9890; margin-bottom:8px; font-family:'DM Mono',monospace;">Reakcje person</div>
+            <div class="ui-persona-list">
+              <div class="ui-persona">
+                <div class="ui-p-avatar" style="background:#4A7FF8;">Z</div>
+                <div>
+                  <div class="ui-p-name">Zosia</div>
+                  <div class="ui-p-role">21 · studentka AWF · matcha-girl</div>
+                </div>
+                <div class="ui-p-right">
+                  <div class="ui-p-score" style="color:#4A7FF8;">9.2</div>
+                  <div class="ui-p-conv">73% konw.</div>
+                </div>
+              </div>
+              <div class="ui-persona">
+                <div class="ui-p-avatar" style="background:#EDE9E1; color:#6B6860;">K</div>
+                <div>
+                  <div class="ui-p-name">Kacper</div>
+                  <div class="ui-p-role">26 · developer · kawa = produktywność</div>
+                </div>
+                <div class="ui-p-right">
+                  <div class="ui-p-score" style="color:#FF7648;">6.1</div>
+                  <div class="ui-p-conv">31% konw.</div>
+                </div>
+              </div>
+              <div class="ui-persona">
+                <div class="ui-p-avatar" style="background:#FFC757; color:#1A1916;">A</div>
+                <div>
+                  <div class="ui-p-name">Ania</div>
+                  <div class="ui-p-role">28 · wellness · sprawdza składy</div>
+                </div>
+                <div class="ui-p-right">
+                  <div class="ui-p-score" style="color:#4A7FF8;">8.4</div>
+                  <div class="ui-p-conv">61% konw.</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
