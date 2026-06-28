@@ -310,6 +310,10 @@ button.secondary {
   padding: 10px;
 }
 
+.main-grid.sidebar-collapsed {
+  grid-template-columns: 56px 1fr;
+}
+
 .backlog-side,
 .planner-wrap {
   background: var(--panel);
@@ -326,6 +330,13 @@ button.secondary {
   flex-direction: column;
 }
 
+.backlog-side.is-collapsed {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 18px;
+  padding: 14px 8px;
+}
+
 .side-head {
   padding: 16px;
   border-bottom: 0.5px solid var(--line);
@@ -333,6 +344,22 @@ button.secondary {
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+}
+
+.collapse-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 11px;
+  line-height: 1;
+  font-size: 24px;
+}
+
+.collapsed-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  color: var(--muted);
 }
 
 .hint {
@@ -350,6 +377,25 @@ h2 {
 .section {
   padding: 12px 16px;
   border-bottom: 0.5px solid var(--line);
+}
+
+.task-composer {
+  padding: 12px 16px;
+  border-bottom: 0.5px solid var(--line);
+  display: grid;
+  gap: 8px;
+  background: #fff;
+}
+
+.task-composer input,
+.task-composer select {
+  width: 100%;
+}
+
+.composer-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .pool {
@@ -669,6 +715,100 @@ h2 {
 
 .sum.over {
   color: var(--coral);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: start end;
+  padding: 18px;
+  background: rgba(26, 25, 22, 0.18);
+  backdrop-filter: blur(4px);
+}
+
+.settings-modal {
+  width: min(460px, calc(100vw - 36px));
+  background: var(--panel);
+  border: 0.5px solid var(--line2);
+  border-radius: 16px;
+  box-shadow: 0 22px 60px rgba(26, 25, 22, 0.18);
+  padding: 16px;
+}
+
+.settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 0.5px solid var(--line);
+}
+
+.close-btn {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.settings-card,
+.settings-section {
+  background: #fff;
+  border: 0.5px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.settings-section {
+  margin-top: 8px;
+}
+
+.settings-label {
+  color: var(--ter);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.settings-value {
+  margin-top: 6px;
+  font-weight: 700;
+}
+
+.settings-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.settings-list span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  background: var(--cream);
+  border: 0.5px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.settings-list i {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  display: inline-block;
 }
 
 .login-shell {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, FormEvent } from 'react';
 import type { Assignment, Epic, PlannerSnapshot, Task, TeamEditMode, UserRole } from '@/lib/domain/types';
 import {
   addDays,
@@ -140,6 +140,12 @@ export function PlannerApp() {
   const [resizing, setResizing] = useState<ResizeContext | null>(null);
   const [resizeDrafts, setResizeDrafts] = useState<Record<string, { durationHours: number; durationDays: number }>>({});
   const [jiraQuery, setJiraQuery] = useState('project = MV AND status != Done');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [taskComposerOpen, setTaskComposerOpen] = useState(false);
+  const [manualTaskTitle, setManualTaskTitle] = useState('');
+  const [manualEpicId, setManualEpicId] = useState('');
+  const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
     const weekStart = startOfCurrentWeek();
@@ -288,24 +294,33 @@ export function PlannerApp() {
   useEffect(() => {
     if (!snapshot || centeredOnceRef.current) return;
     centeredOnceRef.current = true;
-    requestAnimationFrame(() => centerOnWeek(focusWeekStartIso));
-  }, [snapshot, centerOnWeek, focusWeekStartIso]);
+    setPendingCenterIso(focusWeekStartIso);
+  }, [snapshot, focusWeekStartIso]);
+
+  useEffect(() => {
+    if (!pendingCenterIso || !snapshot) return;
+    const frame = requestAnimationFrame(() => {
+      centerOnWeek(pendingCenterIso);
+      setPendingCenterIso(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [centerOnWeek, pendingCenterIso, snapshot]);
 
   const moveWeek = useCallback((delta: number) => {
     const nextWeekStart = toIsoDate(addDays(parseIsoDate(focusWeekStartIso), delta * 7));
     setFocusWeekStartIso(nextWeekStart);
     const centeredStart = toIsoDate(addDays(parseIsoDate(nextWeekStart), -timelineLeadDays()));
     setTimelineStartIso(centeredStart);
-    requestAnimationFrame(() => centerOnWeek(nextWeekStart));
-  }, [focusWeekStartIso, centerOnWeek]);
+    setPendingCenterIso(nextWeekStart);
+  }, [focusWeekStartIso]);
 
   const goToday = useCallback(() => {
     const weekStart = toIsoDate(startOfCurrentWeek());
     setFocusWeekStartIso(weekStart);
     const centeredStart = toIsoDate(addDays(parseIsoDate(weekStart), -timelineLeadDays()));
     setTimelineStartIso(centeredStart);
-    requestAnimationFrame(() => centerOnWeek(weekStart));
-  }, [centerOnWeek]);
+    setPendingCenterIso(weekStart);
+  }, []);
 
   const shiftTimelineWindow = useCallback(
     async (direction: -1 | 1) => {
@@ -598,6 +613,33 @@ export function PlannerApp() {
     };
   }, [handleResizeCommit, resizing, snapshot]);
 
+  const handleCreateTask = useCallback(
+    async (event?: FormEvent<HTMLFormElement>) => {
+      event?.preventDefault();
+      if (!teamId || !canEdit) return;
+      try {
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/tasks/create', {
+          method: 'POST',
+          body: JSON.stringify({
+            teamId,
+            title: manualTaskTitle,
+            epicId: manualEpicId || undefined
+          })
+        });
+        updateSnapshot(next);
+        setManualTaskTitle('');
+        setManualEpicId('');
+        setTaskComposerOpen(false);
+        setSidebarCollapsed(false);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się dodać taska.';
+        setError(message);
+      }
+    },
+    [canEdit, manualEpicId, manualTaskTitle, teamId, updateSnapshot]
+  );
+
   const handleImportJira = useCallback(async () => {
     if (!teamId) return;
     try {
@@ -630,7 +672,12 @@ export function PlannerApp() {
               <span className="brand-claim">Jira mówi, co trzeba zrobić. SPAN pokazuje, kiedy.</span>
             </div>
           </div>
-          <button className="secondary topbar-settings icon-btn" aria-label="Ustawienia" title="Ustawienia">
+          <button
+            className="secondary topbar-settings icon-btn"
+            aria-label="Ustawienia"
+            title="Ustawienia"
+            onClick={() => setSettingsOpen(true)}
+          >
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <circle cx="12" cy="12" r="3" />
               <path d="M9.67 4.14a2.34 2.34 0 0 1 4.66 0 2.34 2.34 0 0 0 3.32 1.91 2.34 2.34 0 0 1 2.33 4.04 2.34 2.34 0 0 0 0 3.82 2.34 2.34 0 0 1-2.33 4.04 2.34 2.34 0 0 0-3.32 1.91 2.34 2.34 0 0 1-4.66 0 2.34 2.34 0 0 0-3.32-1.91 2.34 2.34 0 0 1-2.33-4.04 2.34 2.34 0 0 0 0-3.82 2.34 2.34 0 0 1 2.33-4.04 2.34 2.34 0 0 0 3.32-1.91Z" />
@@ -656,7 +703,14 @@ export function PlannerApp() {
             <button className="secondary jira-btn" onClick={handleImportJira} disabled={!canEdit}>
               Import z Jiry
             </button>
-            <button className="add-btn" disabled>
+            <button
+              className="add-btn"
+              disabled={!canEdit}
+              onClick={() => {
+                setSidebarCollapsed(false);
+                setTaskComposerOpen(true);
+              }}
+            >
               + Dodaj blok
             </button>
           </div>
@@ -680,53 +734,115 @@ export function PlannerApp() {
         {!!error && <div className="error-strip">{error}</div>}
       </header>
 
-      <main className="main-grid">
-        <aside className="backlog-side" data-onboarding="backlog">
-          <div className="side-head">
-            <div>
-              <div className="mono">Backlog</div>
-              <h2>Taski do zaplanowania</h2>
-              <div className="hint">Taski z Jiry i ręczne. Kolor = epic.</div>
-            </div>
-          </div>
-          <div className="section">
-            <input
-              value={jiraQuery}
-              onChange={(event) => setJiraQuery(event.target.value)}
-              disabled={!canEdit}
-              placeholder="JQL"
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div className="pool">
-            {backlogTasks.map((task) => {
-              const epic = epicById.get(task.epicId);
-              return (
-                <div
-                  key={task.id}
-                  className="task"
-                  draggable={canEdit}
-                  onDragStart={(event) => {
-                    if (!canEdit) return;
-                    setDragContext({ source: 'backlog', taskId: task.id });
-                    event.dataTransfer.effectAllowed = 'copyMove';
-                    event.dataTransfer.setData('text/plain', `task:${task.id}`);
-                  }}
-                  onDragEnd={() => {
-                    setDragContext(null);
-                    clearDropPreview();
-                  }}
-                  style={{ '--task-color': epic?.color ?? '#4A7FF8' } as CSSProperties}
-                >
-                  <span className="task-dot" />
-                  <div className="task-title">{task.title}</div>
-                  <div className="task-meta">
-                    {(task.jiraKey ?? task.id).toUpperCase()} · 1h · {epic?.name ?? 'epic'}
-                  </div>
+      <main className={`main-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+        <aside className={`backlog-side ${sidebarCollapsed ? 'is-collapsed' : ''}`} data-onboarding="backlog">
+          {sidebarCollapsed ? (
+            <>
+              <button
+                className="secondary collapse-btn"
+                onClick={() => setSidebarCollapsed(false)}
+                aria-label="Rozwiń backlog"
+                title="Rozwiń backlog"
+              >
+                ›
+              </button>
+              <div className="collapsed-label mono">Backlog</div>
+            </>
+          ) : (
+            <>
+              <div className="side-head">
+                <div>
+                  <div className="mono">Backlog</div>
+                  <h2>Taski do zaplanowania</h2>
+                  <div className="hint">Taski z Jiry i ręczne. Kolor = epic.</div>
                 </div>
-              );
-            })}
-          </div>
+                <button
+                  className="secondary collapse-btn"
+                  onClick={() => setSidebarCollapsed(true)}
+                  aria-label="Zwiń backlog"
+                  title="Zwiń backlog"
+                >
+                  ‹
+                </button>
+              </div>
+              {taskComposerOpen && (
+                <form className="task-composer" onSubmit={handleCreateTask}>
+                  <input
+                    autoFocus
+                    value={manualTaskTitle}
+                    onChange={(event) => setManualTaskTitle(event.target.value)}
+                    disabled={!canEdit}
+                    placeholder="Nazwa taska"
+                  />
+                  <select
+                    value={manualEpicId}
+                    onChange={(event) => setManualEpicId(event.target.value)}
+                    disabled={!canEdit}
+                  >
+                    <option value="">Domyślny epic</option>
+                    {(snapshot?.epics ?? []).map((epic) => (
+                      <option key={epic.id} value={epic.id}>
+                        {epic.name}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="composer-actions">
+                    <button type="submit" disabled={!canEdit || !manualTaskTitle.trim()}>
+                      Dodaj
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        setTaskComposerOpen(false);
+                        setManualTaskTitle('');
+                      }}
+                    >
+                      Anuluj
+                    </button>
+                  </div>
+                </form>
+              )}
+              <div className="section">
+                <input
+                  value={jiraQuery}
+                  onChange={(event) => setJiraQuery(event.target.value)}
+                  disabled={!canEdit}
+                  placeholder="JQL"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="pool">
+                {backlogTasks.map((task) => {
+                  const epic = epicById.get(task.epicId);
+                  return (
+                    <div
+                      key={task.id}
+                      className="task"
+                      draggable={canEdit}
+                      onDragStart={(event) => {
+                        if (!canEdit) return;
+                        setDragContext({ source: 'backlog', taskId: task.id });
+                        event.dataTransfer.effectAllowed = 'copyMove';
+                        event.dataTransfer.setData('text/plain', `task:${task.id}`);
+                      }}
+                      onDragEnd={() => {
+                        setDragContext(null);
+                        clearDropPreview();
+                      }}
+                      style={{ '--task-color': epic?.color ?? '#4A7FF8' } as CSSProperties}
+                    >
+                      <span className="task-dot" />
+                      <div className="task-title">{task.title}</div>
+                      <div className="task-meta">
+                        {(task.jiraKey ?? task.id).toUpperCase()} · 1h · {epic?.name ?? 'epic'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </aside>
 
         <section className="planner-wrap" data-onboarding="timeline" ref={plannerWrapRef}>
@@ -927,6 +1043,59 @@ export function PlannerApp() {
           </div>
         </section>
       </main>
+
+      {settingsOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>
+          <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="settings-head">
+              <div>
+                <div className="mono">Ustawienia</div>
+                <h2 id="settings-title">Workspace i zespół</h2>
+              </div>
+              <button className="secondary icon-btn close-btn" onClick={() => setSettingsOpen(false)} aria-label="Zamknij ustawienia">
+                ×
+              </button>
+            </div>
+            <div className="settings-grid">
+              <div className="settings-card">
+                <div className="settings-label">Workspace</div>
+                <div className="settings-value">{snapshot?.workspace.name ?? 'SPAN'}</div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-label">Zespół</div>
+                <div className="settings-value">{currentTeam?.name ?? snapshot?.team.name}</div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-label">Twoja rola</div>
+                <div className="settings-value">{snapshot?.currentRole}</div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-label">Tryb edycji</div>
+                <div className="settings-value">{currentTeam?.editMode ?? snapshot?.team.editMode}</div>
+              </div>
+            </div>
+            <div className="settings-section">
+              <div className="settings-label">Pracownicy</div>
+              <div className="settings-list">
+                {(snapshot?.employees ?? []).map((employee) => (
+                  <span key={employee.id}>{employee.name}</span>
+                ))}
+              </div>
+            </div>
+            <div className="settings-section">
+              <div className="settings-label">Epiki</div>
+              <div className="settings-list">
+                {(snapshot?.epics ?? []).map((epic) => (
+                  <span key={epic.id}>
+                    <i style={{ background: epic.color }} />
+                    {epic.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

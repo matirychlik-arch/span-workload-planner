@@ -595,6 +595,74 @@ export class SupabaseStore implements DataStore {
     return this.snapshot(params.teamId, params.userId);
   }
 
+  async createManualTask(params: {
+    teamId: string;
+    userId: string;
+    title: string;
+    epicId?: string;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+
+    const title = params.title.trim();
+    if (!title) throw new Error('Wpisz nazwę taska.');
+
+    let epicId = params.epicId;
+    if (epicId) {
+      const { data: epic, error: epicError } = await this.client
+        .from('epics')
+        .select('id')
+        .eq('id', epicId)
+        .eq('workspace_id', team.workspaceId)
+        .maybeSingle();
+      if (epicError) throw new Error(epicError.message);
+      if (!epic) epicId = undefined;
+    }
+
+    if (!epicId) {
+      const { data: firstEpic, error: firstEpicError } = await this.client
+        .from('epics')
+        .select('id')
+        .eq('workspace_id', team.workspaceId)
+        .limit(1)
+        .maybeSingle();
+      if (firstEpicError) throw new Error(firstEpicError.message);
+      epicId = firstEpic ? String(firstEpic.id) : undefined;
+    }
+
+    if (!epicId) {
+      const newEpic: EpicRow = {
+        id: randomUUID(),
+        workspace_id: team.workspaceId,
+        jira_key: null,
+        name: 'Manual',
+        color: '#4A7FF8'
+      };
+      const { error: newEpicError } = await this.client.from('epics').insert(newEpic);
+      if (newEpicError) throw new Error(newEpicError.message);
+      epicId = newEpic.id;
+    }
+
+    const newTask: TaskRow = {
+      id: randomUUID(),
+      workspace_id: team.workspaceId,
+      source: 'manual',
+      jira_issue_id: null,
+      jira_key: null,
+      title,
+      url: null,
+      epic_id: epicId,
+      status: 'todo',
+      assignee_id: null
+    };
+
+    const { error: taskError } = await this.client.from('tasks').insert(newTask);
+    if (taskError) throw new Error(taskError.message);
+
+    return this.snapshot(params.teamId, params.userId);
+  }
+
   async deleteAssignments(params: {
     teamId: string;
     userId: string;

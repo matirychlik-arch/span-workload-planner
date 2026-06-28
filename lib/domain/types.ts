@@ -125,6 +125,12 @@ export interface DataStore {
     durationHours?: number;
     durationDays?: number;
   }): Promise<PlannerSnapshot>;
+  createManualTask(params: {
+    teamId: string;
+    userId: string;
+    title: string;
+    epicId?: string;
+  }): Promise<PlannerSnapshot>;
   deleteAssignments(params: {
     teamId: string;
     userId: string;

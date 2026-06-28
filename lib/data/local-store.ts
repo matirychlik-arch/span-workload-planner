@@ -224,6 +224,44 @@ export class LocalStore implements DataStore {
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
+  async createManualTask(params: {
+    teamId: string;
+    userId: string;
+    title: string;
+    epicId?: string;
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+
+    const title = params.title.trim();
+    if (!title) throw new Error('Wpisz nazwę taska.');
+
+    let epicId = params.epicId && this.state.epics.some((epic) => epic.id === params.epicId)
+      ? params.epicId
+      : this.state.epics.find((epic) => epic.workspaceId === this.state.workspace.id)?.id;
+
+    if (!epicId) {
+      epicId = `ep-${randomUUID()}`;
+      this.state.epics.push({
+        id: epicId,
+        workspaceId: this.state.workspace.id,
+        name: 'Manual',
+        color: '#4A7FF8'
+      });
+    }
+
+    this.state.tasks.push({
+      id: `task-${randomUUID()}`,
+      workspaceId: this.state.workspace.id,
+      source: 'manual',
+      title,
+      epicId,
+      status: 'todo'
+    });
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
   async deleteAssignments(params: {
     teamId: string;
     userId: string;
