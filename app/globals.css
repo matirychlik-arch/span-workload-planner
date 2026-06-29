@@ -423,6 +423,12 @@ h2 {
   overflow: hidden;
 }
 
+.task.pending {
+  cursor: wait;
+  opacity: 0.62;
+  filter: saturate(0.75);
+}
+
 .task-title {
   font-weight: 500;
   font-size: 15px;

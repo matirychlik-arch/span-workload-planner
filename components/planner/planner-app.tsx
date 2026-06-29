@@ -129,6 +129,10 @@ function assignmentSort(a: Assignment, b: Assignment): number {
   );
 }
 
+function isOptimisticId(id: string): boolean {
+  return id.startsWith('optimistic-');
+}
+
 export function PlannerApp() {
   const [teams, setTeams] = useState<TeamOption[]>([]);
   const [teamId, setTeamId] = useState<string>('');
@@ -422,6 +426,7 @@ export function PlannerApp() {
     ): DropPreview[] => {
       if (!context) return [];
       if (context.source === 'backlog') {
+        if (isOptimisticId(context.taskId)) return [];
         const task = taskById.get(context.taskId);
         const epic = task ? epicById.get(task.epicId) : undefined;
         return [
@@ -472,6 +477,7 @@ export function PlannerApp() {
       const now = new Date().toISOString();
 
       if (context.source === 'backlog') {
+        if (isOptimisticId(context.taskId)) return null;
         const task = taskById.get(context.taskId);
         if (!task) return null;
         const created: Assignment = {
@@ -558,6 +564,10 @@ export function PlannerApp() {
 
       try {
         if (dragContext.source === 'backlog') {
+          if (isOptimisticId(dragContext.taskId)) {
+            setError('Task jeszcze się zapisuje. Poczekaj sekundę i przeciągnij go ponownie.');
+            return;
+          }
           const next = await api<PlannerSnapshot>('/api/assignments/create', {
             method: 'POST',
             body: JSON.stringify({
@@ -1153,13 +1163,17 @@ export function PlannerApp() {
               <div className="pool">
                 {backlogTasks.map((task) => {
                   const epic = epicById.get(task.epicId);
+                  const taskReady = !isOptimisticId(task.id);
                   return (
                     <div
                       key={task.id}
-                      className="task"
-                      draggable={canEdit}
+                      className={`task ${taskReady ? '' : 'pending'}`}
+                      draggable={canEdit && taskReady}
                       onDragStart={(event) => {
-                        if (!canEdit) return;
+                        if (!canEdit || !taskReady) {
+                          event.preventDefault();
+                          return;
+                        }
                         setDragContext({ source: 'backlog', taskId: task.id });
                         event.dataTransfer.effectAllowed = 'copyMove';
                         event.dataTransfer.setData('text/plain', `task:${task.id}`);
@@ -1173,7 +1187,7 @@ export function PlannerApp() {
                       <span className="task-dot" />
                       <div className="task-title">{task.title}</div>
                       <div className="task-meta">
-                        {(task.jiraKey ?? task.id).toUpperCase()} · 1h · {epic?.name ?? 'epic'}
+                        {taskReady ? `${(task.jiraKey ?? task.id).toUpperCase()} · 1h · ${epic?.name ?? 'epic'}` : 'zapisywanie...'}
                       </div>
                     </div>
                   );
