@@ -336,6 +336,15 @@ export class SupabaseStore implements DataStore {
     }
   }
 
+  private async detachUserFromTeamEmployees(teamId: string, userId: string): Promise<void> {
+    const { error } = await this.client
+      .from('employees')
+      .update({ user_id: null })
+      .eq('team_id', teamId)
+      .eq('user_id', userId);
+    if (error) throw new Error(error.message);
+  }
+
   private async ensureMember(teamId: string, userId: string, role: UserRole): Promise<void> {
     const { data: member, error } = await this.client
       .from('team_members')
@@ -424,6 +433,7 @@ export class SupabaseStore implements DataStore {
       if (isOwnerEmail(profile.email)) {
         const teamId = await this.ensureCreativeTeam(String(existingUser.workspace_id), userId);
         await this.ensureCreativeEmployees(String(existingUser.workspace_id), teamId);
+        await this.detachUserFromTeamEmployees(teamId, userId);
         await this.ensureMember(teamId, userId, 'admin');
       } else {
         await this.attachMateuszWorkUser(userId, profile);
@@ -545,6 +555,10 @@ export class SupabaseStore implements DataStore {
     }));
     const { error: assignmentError } = await this.client.from('assignments').insert(assignmentRows);
     if (assignmentError) throw new Error(assignmentError.message);
+
+    if (isOwnerEmail(profile.email)) {
+      await this.detachUserFromTeamEmployees(teamId, userId);
+    }
   }
 
   private async teamContext(teamId: string, userId: string): Promise<TeamContext> {
