@@ -1,4 +1,5 @@
 import { AppUser, Assignment, Employee, Epic, Task, Team, TeamMember, Workspace } from '@/lib/domain/types';
+import { CREATIVE_TEAM_NAME, OWNER_EMAIL, MATEUSZ_WORK_EMAIL } from '@/lib/security/roles';
 
 const now = new Date().toISOString();
 
@@ -11,16 +12,18 @@ export const seedWorkspace: Workspace = {
 };
 
 export const seedUsers: AppUser[] = [
-  { id: 'u-admin', email: 'admin@span.local', name: 'Admin SPAN' },
+  { id: 'u-admin', email: OWNER_EMAIL, name: 'Mateusz admin' },
   { id: 'u-marcin', email: 'marcin@span.local', name: 'Marcin' },
-  { id: 'u-mateusz', email: 'mateusz@span.local', name: 'Mateusz' }
+  { id: 'u-mateusz', email: MATEUSZ_WORK_EMAIL, name: 'Mateusz' },
+  { id: 'u-adam', email: 'adam@span.local', name: 'Adam' },
+  { id: 'u-karo', email: 'karo@span.local', name: 'Karo' }
 ];
 
 export const seedTeams: Team[] = [
   {
     id: 'team-design',
     workspaceId: seedWorkspace.id,
-    name: 'Design Team',
+    name: CREATIVE_TEAM_NAME,
     pmUserId: 'u-admin',
     editMode: 'collaborative'
   }
@@ -29,7 +32,9 @@ export const seedTeams: Team[] = [
 export const seedTeamMembers: TeamMember[] = [
   { teamId: 'team-design', userId: 'u-admin', role: 'admin' },
   { teamId: 'team-design', userId: 'u-marcin', role: 'employee' },
-  { teamId: 'team-design', userId: 'u-mateusz', role: 'employee' }
+  { teamId: 'team-design', userId: 'u-mateusz', role: 'employee' },
+  { teamId: 'team-design', userId: 'u-adam', role: 'admin' },
+  { teamId: 'team-design', userId: 'u-karo', role: 'admin' }
 ];
 
 export const seedEmployees: Employee[] = [
@@ -38,18 +43,44 @@ export const seedEmployees: Employee[] = [
     workspaceId: seedWorkspace.id,
     teamId: 'team-design',
     userId: 'u-marcin',
-    name: 'Marcin',
+    name: 'Marcin - grafik',
     active: true,
-    tintColor: '#EEF3FF'
+    tintColor: '#F6EFE8'
   },
   {
     id: 'emp-mateusz',
     workspaceId: seedWorkspace.id,
     teamId: 'team-design',
     userId: 'u-mateusz',
-    name: 'Mateusz',
+    name: 'Mateusz - grafik',
     active: true,
-    tintColor: '#F6EFE8'
+    tintColor: '#EEF3FF'
+  },
+  {
+    id: 'emp-patrycja',
+    workspaceId: seedWorkspace.id,
+    teamId: 'team-design',
+    name: 'Patrycja - copywriterka',
+    active: true,
+    tintColor: '#EEF7EF'
+  },
+  {
+    id: 'emp-adam',
+    workspaceId: seedWorkspace.id,
+    teamId: 'team-design',
+    userId: 'u-adam',
+    name: 'Adam - copywriter / traffic',
+    active: true,
+    tintColor: '#F2EDFA'
+  },
+  {
+    id: 'emp-karo',
+    workspaceId: seedWorkspace.id,
+    teamId: 'team-design',
+    userId: 'u-karo',
+    name: 'Karo - PM',
+    active: true,
+    tintColor: '#FCF5E8'
   }
 ];
 

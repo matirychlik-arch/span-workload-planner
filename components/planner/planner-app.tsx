@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import type { Assignment, Epic, PlannerSnapshot, Task, TeamEditMode, UserRole } from '@/lib/domain/types';
+import { resolveSticky } from '@/lib/domain/sticky';
+import { OWNER_EMAIL } from '@/lib/security/roles';
 import {
   addDays,
   clamp,
@@ -145,6 +147,13 @@ export function PlannerApp() {
   const [taskComposerOpen, setTaskComposerOpen] = useState(false);
   const [manualTaskTitle, setManualTaskTitle] = useState('');
   const [manualEpicId, setManualEpicId] = useState('');
+  const [teamNameDraft, setTeamNameDraft] = useState('');
+  const [teamEditModeDraft, setTeamEditModeDraft] = useState<TeamEditMode>('collaborative');
+  const [newTeamName, setNewTeamName] = useState('');
+  const [newEmployeeName, setNewEmployeeName] = useState('');
+  const [newEmployeeTint, setNewEmployeeTint] = useState(PERSON_TINTS[0]);
+  const [employeeDrafts, setEmployeeDrafts] = useState<Record<string, { name: string; tintColor: string }>>({});
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
@@ -453,6 +462,87 @@ export function PlannerApp() {
     [taskById, epicById]
   );
 
+  const buildOptimisticDropSnapshot = useCallback(
+    (
+      context: PlannerDragContext,
+      target: { employeeId: string; date: string; startHour: number },
+      copyMode: boolean
+    ): PlannerSnapshot | null => {
+      if (!snapshot) return null;
+      const now = new Date().toISOString();
+
+      if (context.source === 'backlog') {
+        const task = taskById.get(context.taskId);
+        if (!task) return null;
+        const created: Assignment = {
+          id: `optimistic-${Date.now()}`,
+          workspaceId: snapshot.workspace.id,
+          teamId,
+          taskId: context.taskId,
+          employeeId: target.employeeId,
+          startDate: target.date,
+          startHour: target.startHour,
+          desiredStartHour: target.startHour,
+          durationHours: 1,
+          durationDays: 1,
+          version: 1,
+          updatedAt: now
+        };
+        return {
+          ...snapshot,
+          assignments: resolveSticky([...snapshot.assignments, created], created.id)
+        };
+      }
+
+      const anchorOriginal = context.originals.find((item) => item.id === context.anchorAssignmentId);
+      if (!anchorOriginal) return null;
+      const dayDelta = diffDays(anchorOriginal.startDate, target.date);
+      const hourDelta = target.startHour - anchorOriginal.startHour;
+
+      if (copyMode) {
+        const copies = context.originals.map((original, index) => ({
+          ...original,
+          id: `optimistic-copy-${Date.now()}-${index}`,
+          workspaceId: snapshot.workspace.id,
+          teamId,
+          employeeId: target.employeeId,
+          startDate: shiftIsoDate(original.startDate, dayDelta),
+          startHour: clamp(original.startHour + hourDelta, DAY_START_HOUR, DAY_END_HOUR - 1),
+          desiredStartHour: clamp(original.startHour + hourDelta, DAY_START_HOUR, DAY_END_HOUR - 1),
+          version: 1,
+          updatedAt: now
+        }));
+        return {
+          ...snapshot,
+          assignments: resolveSticky([...snapshot.assignments, ...copies], copies[0]?.id)
+        };
+      }
+
+      const movedIds = new Set(context.assignmentIds);
+      const nextAssignments = snapshot.assignments.map((assignment) => {
+        if (!movedIds.has(assignment.id)) return assignment;
+        const original = context.originals.find((item) => item.id === assignment.id);
+        if (!original) return assignment;
+        const nextStart = clamp(original.startHour + hourDelta, DAY_START_HOUR, DAY_END_HOUR - 1);
+        return {
+          ...assignment,
+          employeeId: target.employeeId,
+          startDate: shiftIsoDate(original.startDate, dayDelta),
+          startHour: nextStart,
+          desiredStartHour: nextStart,
+          updatedAt: now,
+          version: assignment.version + 1
+        };
+      });
+
+      return {
+        ...snapshot,
+        assignments: resolveSticky(nextAssignments, context.anchorAssignmentId)
+      };
+    },
+    [snapshot, taskById, teamId]
+  );
+
   const handleDrop = useCallback(
     async (
       event: React.DragEvent<HTMLDivElement>,
@@ -460,6 +550,11 @@ export function PlannerApp() {
     ) => {
       event.preventDefault();
       if (!canEdit || !teamId || !dragContext) return;
+
+      const previousSnapshot = snapshot;
+      const copyMode = event.altKey;
+      const optimisticSnapshot = buildOptimisticDropSnapshot(dragContext, target, copyMode);
+      if (optimisticSnapshot) updateSnapshot(optimisticSnapshot);
 
       try {
         if (dragContext.source === 'backlog') {
@@ -486,7 +581,7 @@ export function PlannerApp() {
           targetDate: target.date,
           targetStartHour: target.startHour
         };
-        const endpoint = event.altKey ? '/api/assignments/copy' : '/api/assignments/move';
+        const endpoint = copyMode ? '/api/assignments/copy' : '/api/assignments/move';
         const next = await api<PlannerSnapshot>(endpoint, {
           method: 'POST',
           body: JSON.stringify(payload)
@@ -494,6 +589,7 @@ export function PlannerApp() {
         updateSnapshot(next);
         setSelectedIds(new Set());
       } catch (err) {
+        if (previousSnapshot) updateSnapshot(previousSnapshot);
         const message = err instanceof Error ? err.message : 'Błąd podczas przenoszenia.';
         setError(message);
       } finally {
@@ -501,14 +597,22 @@ export function PlannerApp() {
         clearDropPreview();
       }
     },
-    [canEdit, clearDropPreview, dragContext, teamId, updateSnapshot]
+    [buildOptimisticDropSnapshot, canEdit, clearDropPreview, dragContext, snapshot, teamId, updateSnapshot]
   );
 
   const handleDelete = useCallback(
     async (assignmentId: string) => {
       if (!teamId || !canEdit) return;
       const toDelete = selectedIds.has(assignmentId) && selectedIds.size > 0 ? Array.from(selectedIds) : [assignmentId];
+      const previousSnapshot = snapshot;
       try {
+        if (snapshot) {
+          const removeSet = new Set(toDelete);
+          updateSnapshot({
+            ...snapshot,
+            assignments: resolveSticky(snapshot.assignments.filter((assignment) => !removeSet.has(assignment.id)))
+          });
+        }
         const next = await api<PlannerSnapshot>('/api/assignments/delete', {
           method: 'POST',
           body: JSON.stringify({ teamId, assignmentIds: toDelete })
@@ -516,17 +620,36 @@ export function PlannerApp() {
         updateSnapshot(next);
         setSelectedIds(new Set());
       } catch (err) {
+        if (previousSnapshot) updateSnapshot(previousSnapshot);
         const message = err instanceof Error ? err.message : 'Błąd podczas usuwania.';
         setError(message);
       }
     },
-    [canEdit, selectedIds, teamId, updateSnapshot]
+    [canEdit, selectedIds, snapshot, teamId, updateSnapshot]
   );
 
   const handleResizeCommit = useCallback(
     async (assignmentId: string, durationHours?: number, durationDays?: number) => {
       if (!teamId || !canEdit) return;
+      const previousSnapshot = snapshot;
       try {
+        if (snapshot) {
+          const nextAssignments = snapshot.assignments.map((assignment) =>
+            assignment.id === assignmentId
+              ? {
+                  ...assignment,
+                  durationHours: durationHours ?? assignment.durationHours,
+                  durationDays: durationDays ?? assignment.durationDays,
+                  version: assignment.version + 1,
+                  updatedAt: new Date().toISOString()
+                }
+              : assignment
+          );
+          updateSnapshot({
+            ...snapshot,
+            assignments: resolveSticky(nextAssignments, assignmentId)
+          });
+        }
         const next = await api<PlannerSnapshot>('/api/assignments/resize', {
           method: 'POST',
           body: JSON.stringify({
@@ -538,11 +661,12 @@ export function PlannerApp() {
         });
         updateSnapshot(next);
       } catch (err) {
+        if (previousSnapshot) updateSnapshot(previousSnapshot);
         const message = err instanceof Error ? err.message : 'Błąd podczas resize.';
         setError(message);
       }
     },
-    [canEdit, teamId, updateSnapshot]
+    [canEdit, snapshot, teamId, updateSnapshot]
   );
 
   useEffect(() => {
@@ -617,13 +741,35 @@ export function PlannerApp() {
     async (event?: FormEvent<HTMLFormElement>) => {
       event?.preventDefault();
       if (!teamId || !canEdit) return;
+      const title = manualTaskTitle.trim();
+      if (!title) return;
+      const previousSnapshot = snapshot;
       try {
         setError('');
+        if (snapshot) {
+          const fallbackEpicId = manualEpicId || snapshot.epics[0]?.id;
+          if (fallbackEpicId) {
+            updateSnapshot({
+              ...snapshot,
+              tasks: [
+                ...snapshot.tasks,
+                {
+                  id: `optimistic-task-${Date.now()}`,
+                  workspaceId: snapshot.workspace.id,
+                  source: 'manual',
+                  title,
+                  epicId: fallbackEpicId,
+                  status: 'todo'
+                }
+              ]
+            });
+          }
+        }
         const next = await api<PlannerSnapshot>('/api/tasks/create', {
           method: 'POST',
           body: JSON.stringify({
             teamId,
-            title: manualTaskTitle,
+            title,
             epicId: manualEpicId || undefined
           })
         });
@@ -633,11 +779,12 @@ export function PlannerApp() {
         setTaskComposerOpen(false);
         setSidebarCollapsed(false);
       } catch (err) {
+        if (previousSnapshot) updateSnapshot(previousSnapshot);
         const message = err instanceof Error ? err.message : 'Nie udało się dodać taska.';
         setError(message);
       }
     },
-    [canEdit, manualEpicId, manualTaskTitle, teamId, updateSnapshot]
+    [canEdit, manualEpicId, manualTaskTitle, snapshot, teamId, updateSnapshot]
   );
 
   const handleImportJira = useCallback(async () => {
@@ -656,6 +803,197 @@ export function PlannerApp() {
   }, [jiraQuery, loadPlanner, teamId, timelineStartIso]);
 
   const currentTeam = useMemo(() => teams.find((team) => team.id === teamId), [teams, teamId]);
+  const currentUser = useMemo(
+    () => snapshot?.users.find((user) => user.id === snapshot.currentUserId),
+    [snapshot]
+  );
+  const canManageSettings = snapshot?.currentRole === 'admin';
+  const canGrantAdmins = currentUser?.email?.toLowerCase() === OWNER_EMAIL;
+
+  useEffect(() => {
+    if (!settingsOpen || !snapshot) return;
+    setTeamNameDraft(currentTeam?.name ?? snapshot.team.name);
+    setTeamEditModeDraft((currentTeam?.editMode ?? snapshot.team.editMode) as TeamEditMode);
+    setEmployeeDrafts(
+      Object.fromEntries(
+        snapshot.employees.map((employee) => [
+          employee.id,
+          {
+            name: employee.name,
+            tintColor: employee.tintColor ?? PERSON_TINTS[0]
+          }
+        ])
+      )
+    );
+  }, [currentTeam?.editMode, currentTeam?.name, settingsOpen, snapshot]);
+
+  const refreshTeams = useCallback(async (nextTeamId?: string) => {
+    const result = await api<TeamOption[]>('/api/teams');
+    setTeams(result);
+    if (nextTeamId) setTeamId(nextTeamId);
+  }, []);
+
+  const handleSaveTeamSettings = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!teamId || !canManageSettings) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/team', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            teamId,
+            name: teamNameDraft,
+            editMode: teamEditModeDraft
+          })
+        });
+        updateSnapshot(next);
+        await refreshTeams();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się zapisać teamu.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, refreshTeams, teamEditModeDraft, teamId, teamNameDraft, updateSnapshot]
+  );
+
+  const handleCreateTeam = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!teamId || !canManageSettings || !newTeamName.trim()) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/teams/create', {
+          method: 'POST',
+          body: JSON.stringify({
+            teamId,
+            name: newTeamName,
+            editMode: 'collaborative'
+          })
+        });
+        updateSnapshot(next);
+        setNewTeamName('');
+        await refreshTeams(next.team.id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się utworzyć teamu.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, newTeamName, refreshTeams, teamId, updateSnapshot]
+  );
+
+  const handleCreateEmployee = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!teamId || !canManageSettings || !newEmployeeName.trim()) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/employees/create', {
+          method: 'POST',
+          body: JSON.stringify({
+            teamId,
+            name: newEmployeeName,
+            tintColor: newEmployeeTint
+          })
+        });
+        updateSnapshot(next);
+        setNewEmployeeName('');
+        setNewEmployeeTint(PERSON_TINTS[next.employees.length % PERSON_TINTS.length]);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się dodać pracownika.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, newEmployeeName, newEmployeeTint, teamId, updateSnapshot]
+  );
+
+  const handleSaveEmployee = useCallback(
+    async (employeeId: string) => {
+      if (!teamId || !canManageSettings) return;
+      const draft = employeeDrafts[employeeId];
+      if (!draft) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/employees/update', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            teamId,
+            employeeId,
+            name: draft.name,
+            tintColor: draft.tintColor
+          })
+        });
+        updateSnapshot(next);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się zapisać pracownika.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, employeeDrafts, teamId, updateSnapshot]
+  );
+
+  const handleDeactivateEmployee = useCallback(
+    async (employeeId: string) => {
+      if (!teamId || !canManageSettings) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/employees/update', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            teamId,
+            employeeId,
+            active: false
+          })
+        });
+        updateSnapshot(next);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się usunąć pracownika.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, teamId, updateSnapshot]
+  );
+
+  const handleChangeMemberRole = useCallback(
+    async (memberUserId: string, role: UserRole) => {
+      if (!teamId || !canManageSettings) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/members/role', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            teamId,
+            memberUserId,
+            role
+          })
+        });
+        updateSnapshot(next);
+        await refreshTeams();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się zmienić roli.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, refreshTeams, teamId, updateSnapshot]
+  );
 
   if (loading && !snapshot) {
     return <div className="state-box">Ładowanie plannera…</div>;
@@ -1050,36 +1388,159 @@ export function PlannerApp() {
             <div className="settings-head">
               <div>
                 <div className="mono">Ustawienia</div>
-                <h2 id="settings-title">Workspace i zespół</h2>
+                <h2 id="settings-title">Teamy i pracownicy</h2>
               </div>
               <button className="secondary icon-btn close-btn" onClick={() => setSettingsOpen(false)} aria-label="Zamknij ustawienia">
                 ×
               </button>
             </div>
-            <div className="settings-grid">
-              <div className="settings-card">
-                <div className="settings-label">Workspace</div>
-                <div className="settings-value">{snapshot?.workspace.name ?? 'SPAN'}</div>
+            {!canManageSettings && (
+              <div className="settings-note">Tylko admin może zmieniać teamy i pracowników.</div>
+            )}
+            {canManageSettings && !canGrantAdmins && (
+              <div className="settings-note">Role admin może nadawać tylko {OWNER_EMAIL}.</div>
+            )}
+            <form className="settings-section settings-form" onSubmit={handleSaveTeamSettings}>
+              <div className="settings-label">Aktywny team</div>
+              <input
+                value={teamNameDraft}
+                onChange={(event) => setTeamNameDraft(event.target.value)}
+                disabled={!canManageSettings || settingsSaving}
+                placeholder="Nazwa teamu"
+              />
+              <select
+                value={teamEditModeDraft}
+                onChange={(event) => setTeamEditModeDraft(event.target.value as TeamEditMode)}
+                disabled={!canManageSettings || settingsSaving}
+              >
+                <option value="collaborative">Collaborative: pracownicy mogą edytować swoje bloki</option>
+                <option value="pm_only">PM only: edytuje tylko PM/admin</option>
+              </select>
+              <button type="submit" disabled={!canManageSettings || settingsSaving || !teamNameDraft.trim()}>
+                Zapisz team
+              </button>
+            </form>
+            <form className="settings-section settings-form" onSubmit={handleCreateTeam}>
+              <div className="settings-label">Nowy team</div>
+              <div className="settings-inline">
+                <input
+                  value={newTeamName}
+                  onChange={(event) => setNewTeamName(event.target.value)}
+                  disabled={!canManageSettings || settingsSaving}
+                  placeholder="Nazwa nowego teamu"
+                />
+                <button type="submit" disabled={!canManageSettings || settingsSaving || !newTeamName.trim()}>
+                  Dodaj
+                </button>
               </div>
-              <div className="settings-card">
-                <div className="settings-label">Zespół</div>
-                <div className="settings-value">{currentTeam?.name ?? snapshot?.team.name}</div>
-              </div>
-              <div className="settings-card">
-                <div className="settings-label">Twoja rola</div>
-                <div className="settings-value">{snapshot?.currentRole}</div>
-              </div>
-              <div className="settings-card">
-                <div className="settings-label">Tryb edycji</div>
-                <div className="settings-value">{currentTeam?.editMode ?? snapshot?.team.editMode}</div>
+            </form>
+            <div className="settings-section">
+              <div className="settings-label">Członkowie i role</div>
+              <div className="member-settings-list">
+                {(snapshot?.members ?? []).map((member) => {
+                  const user = snapshot?.users.find((item) => item.id === member.userId);
+                  return (
+                    <div key={`${member.teamId}-${member.userId}`} className="member-settings-row">
+                      <div>
+                        <div className="member-name">{user?.name ?? member.userId}</div>
+                        <div className="member-email">{user?.email ?? 'brak maila'}</div>
+                      </div>
+                      <select
+                        value={member.role}
+                        disabled={!canManageSettings || settingsSaving}
+                        onChange={(event) => void handleChangeMemberRole(member.userId, event.target.value as UserRole)}
+                      >
+                        <option value="employee">employee</option>
+                        <option value="pm">pm</option>
+                        <option value="admin" disabled={!canGrantAdmins && member.role !== 'admin'}>
+                          admin
+                        </option>
+                      </select>
+                    </div>
+                  );
+                })}
               </div>
             </div>
+            <form className="settings-section settings-form" onSubmit={handleCreateEmployee}>
+              <div className="settings-label">Dodaj pracownika</div>
+              <div className="settings-inline">
+                <input
+                  value={newEmployeeName}
+                  onChange={(event) => setNewEmployeeName(event.target.value)}
+                  disabled={!canManageSettings || settingsSaving}
+                  placeholder="Imię i nazwisko"
+                />
+                <input
+                  className="color-input"
+                  type="color"
+                  value={newEmployeeTint}
+                  onChange={(event) => setNewEmployeeTint(event.target.value)}
+                  disabled={!canManageSettings || settingsSaving}
+                  aria-label="Kolor pracownika"
+                />
+                <button type="submit" disabled={!canManageSettings || settingsSaving || !newEmployeeName.trim()}>
+                  Dodaj
+                </button>
+              </div>
+            </form>
             <div className="settings-section">
-              <div className="settings-label">Pracownicy</div>
-              <div className="settings-list">
-                {(snapshot?.employees ?? []).map((employee) => (
-                  <span key={employee.id}>{employee.name}</span>
-                ))}
+              <div className="settings-label">Pracownicy teamu</div>
+              <div className="employee-settings-list">
+                {(snapshot?.employees ?? []).map((employee) => {
+                  const draft = employeeDrafts[employee.id] ?? {
+                    name: employee.name,
+                    tintColor: employee.tintColor ?? PERSON_TINTS[0]
+                  };
+                  return (
+                    <div key={employee.id} className="employee-settings-row">
+                      <input
+                        value={draft.name}
+                        onChange={(event) =>
+                          setEmployeeDrafts((prev) => ({
+                            ...prev,
+                            [employee.id]: {
+                              ...draft,
+                              name: event.target.value
+                            }
+                          }))
+                        }
+                        disabled={!canManageSettings || settingsSaving}
+                      />
+                      <input
+                        className="color-input"
+                        type="color"
+                        value={draft.tintColor}
+                        onChange={(event) =>
+                          setEmployeeDrafts((prev) => ({
+                            ...prev,
+                            [employee.id]: {
+                              ...draft,
+                              tintColor: event.target.value
+                            }
+                          }))
+                        }
+                        disabled={!canManageSettings || settingsSaving}
+                        aria-label={`Kolor ${employee.name}`}
+                      />
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void handleSaveEmployee(employee.id)}
+                        disabled={!canManageSettings || settingsSaving || !draft.name.trim()}
+                      >
+                        Zapisz
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary danger-btn"
+                        onClick={() => void handleDeactivateEmployee(employee.id)}
+                        disabled={!canManageSettings || settingsSaving}
+                      >
+                        Usuń
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="settings-section">

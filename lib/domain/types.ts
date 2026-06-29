@@ -131,6 +131,38 @@ export interface DataStore {
     title: string;
     epicId?: string;
   }): Promise<PlannerSnapshot>;
+  updateTeamSettings(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    editMode: TeamEditMode;
+  }): Promise<PlannerSnapshot>;
+  createTeam(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    editMode: TeamEditMode;
+  }): Promise<PlannerSnapshot>;
+  createEmployee(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    tintColor?: string;
+  }): Promise<PlannerSnapshot>;
+  updateEmployee(params: {
+    teamId: string;
+    userId: string;
+    employeeId: string;
+    name?: string;
+    tintColor?: string;
+    active?: boolean;
+  }): Promise<PlannerSnapshot>;
+  updateTeamMemberRole(params: {
+    teamId: string;
+    userId: string;
+    memberUserId: string;
+    role: UserRole;
+  }): Promise<PlannerSnapshot>;
   deleteAssignments(params: {
     teamId: string;
     userId: string;

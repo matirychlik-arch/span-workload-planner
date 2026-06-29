@@ -2,11 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
 import { resolveSticky } from '@/lib/domain/sticky';
-import { Assignment, AppUser, DataStore, Employee, Epic, PlannerSnapshot, Task, Team, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
+import { Assignment, AppUser, DataStore, Employee, Epic, PlannerSnapshot, Task, Team, TeamEditMode, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
+import {
+  CREATIVE_EMPLOYEES,
+  CREATIVE_TEAM_NAME,
+  MATEUSZ_WORK_EMAIL,
+  OWNER_EMAIL,
+  assertCanGrantRole,
+  assertCanManagePeople,
+  isOwnerEmail,
+  normalizeEmail
+} from '@/lib/security/roles';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
-import { seedAssignments, seedEmployees, seedEpics, seedTasks, seedWorkspace } from '@/lib/data/mock-seed';
+import { seedAssignments, seedEpics, seedTasks, seedWorkspace } from '@/lib/data/mock-seed';
 
 type WorkspaceRow = {
   id: string;
@@ -231,20 +241,197 @@ export class SupabaseStore implements DataStore {
     this.client = client ?? createSupabaseAdminClient();
   }
 
-  private async ensureUserWorkspaceAndSeed(userId: string): Promise<void> {
-    if (!userId || userId.startsWith('u-')) return;
-
-    const { data: existingUser, error: userError } = await this.client
-      .from('app_users')
-      .select('id, workspace_id')
-      .eq('id', userId)
-      .maybeSingle();
-    if (userError) throw new Error(userError.message);
-    if (existingUser) return;
-
+  private async authProfile(userId: string): Promise<{ email: string; name: string; googleSub: string | null }> {
     const { data: authUser, error: authError } = await this.client.auth.admin.getUserById(userId);
     if (authError) throw new Error(authError.message);
     if (!authUser.user) throw new Error('Nie znaleziono użytkownika auth.');
+    const email = normalizeEmail(authUser.user.email);
+    return {
+      email: email || `user-${userId}@span.local`,
+      name: authUser.user.user_metadata?.name ?? email.split('@')[0] ?? 'Uzytkownik',
+      googleSub: authUser.user.user_metadata?.sub ?? null
+    };
+  }
+
+  private async ownerWorkspaceId(): Promise<string | null> {
+    const { data, error } = await this.client
+      .from('app_users')
+      .select('workspace_id')
+      .eq('email', OWNER_EMAIL)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return data?.workspace_id ? String(data.workspace_id) : null;
+  }
+
+  private async ensureCreativeTeam(workspaceId: string, pmUserId: string): Promise<string> {
+    const { data: teams, error: teamListError } = await this.client
+      .from('teams')
+      .select('id, name')
+      .eq('workspace_id', workspaceId);
+    if (teamListError) throw new Error(teamListError.message);
+
+    const existingTeams = (teams ?? []) as Array<{ id: string; name: string }>;
+    const existingCreative = existingTeams.find((team) => team.name === CREATIVE_TEAM_NAME);
+    const reusableTeam = existingCreative ?? existingTeams[0];
+
+    if (reusableTeam) {
+      const { error } = await this.client
+        .from('teams')
+        .update({
+          name: CREATIVE_TEAM_NAME,
+          pm_user_id: pmUserId,
+          edit_mode: 'collaborative'
+        })
+        .eq('id', reusableTeam.id);
+      if (error) throw new Error(error.message);
+      return reusableTeam.id;
+    }
+
+    const teamId = randomUUID();
+    const teamRow: TeamRow = {
+      id: teamId,
+      workspace_id: workspaceId,
+      name: CREATIVE_TEAM_NAME,
+      pm_user_id: pmUserId,
+      edit_mode: 'collaborative'
+    };
+    const { error } = await this.client.from('teams').insert(teamRow);
+    if (error) throw new Error(error.message);
+    return teamId;
+  }
+
+  private async ensureCreativeEmployees(workspaceId: string, teamId: string): Promise<void> {
+    const { data: employees, error } = await this.client
+      .from('employees')
+      .select('id, name')
+      .eq('team_id', teamId);
+    if (error) throw new Error(error.message);
+
+    const existing = (employees ?? []) as Array<{ id: string; name: string }>;
+    for (const employee of CREATIVE_EMPLOYEES) {
+      const found = existing.find((item) => item.name.toLowerCase().includes(employee.key));
+      if (found) {
+        const { error: updateError } = await this.client
+          .from('employees')
+          .update({
+            name: employee.name,
+            tint_color: employee.tintColor,
+            active: true
+          })
+          .eq('id', found.id);
+        if (updateError) throw new Error(updateError.message);
+        continue;
+      }
+
+      const { error: insertError } = await this.client.from('employees').insert({
+        id: randomUUID(),
+        workspace_id: workspaceId,
+        team_id: teamId,
+        user_id: null,
+        name: employee.name,
+        active: true,
+        tint_color: employee.tintColor
+      });
+      if (insertError) throw new Error(insertError.message);
+    }
+  }
+
+  private async ensureMember(teamId: string, userId: string, role: UserRole): Promise<void> {
+    const { data: member, error } = await this.client
+      .from('team_members')
+      .select('team_id, user_id, role')
+      .eq('team_id', teamId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+
+    if (member) {
+      const { error: updateError } = await this.client
+        .from('team_members')
+        .update({ role })
+        .eq('team_id', teamId)
+        .eq('user_id', userId);
+      if (updateError) throw new Error(updateError.message);
+      return;
+    }
+
+    const { error: insertError } = await this.client.from('team_members').insert({
+      team_id: teamId,
+      user_id: userId,
+      role
+    });
+    if (insertError) throw new Error(insertError.message);
+  }
+
+  private async attachMateuszWorkUser(userId: string, profile: { email: string; name: string; googleSub: string | null }): Promise<boolean> {
+    if (profile.email !== MATEUSZ_WORK_EMAIL) return false;
+    const workspaceId = await this.ownerWorkspaceId();
+    if (!workspaceId) return false;
+
+    const { data: ownerUser, error: ownerError } = await this.client
+      .from('app_users')
+      .select('id')
+      .eq('email', OWNER_EMAIL)
+      .maybeSingle();
+    if (ownerError) throw new Error(ownerError.message);
+    const ownerUserId = ownerUser?.id ? String(ownerUser.id) : userId;
+    const teamId = await this.ensureCreativeTeam(workspaceId, ownerUserId);
+
+    const userRow: AppUserRow = {
+      id: userId,
+      workspace_id: workspaceId,
+      email: profile.email,
+      name: 'Mateusz',
+      google_sub: profile.googleSub,
+      slack_user_id: null
+    };
+    const { error: userError } = await this.client.from('app_users').upsert(userRow, { onConflict: 'id' });
+    if (userError) throw new Error(userError.message);
+
+    await this.ensureMember(teamId, userId, 'employee');
+    await this.ensureCreativeEmployees(workspaceId, teamId);
+
+    const { data: mateuszEmployee, error: employeeError } = await this.client
+      .from('employees')
+      .select('id')
+      .eq('team_id', teamId)
+      .ilike('name', '%Mateusz%')
+      .limit(1)
+      .maybeSingle();
+    if (employeeError) throw new Error(employeeError.message);
+    if (mateuszEmployee?.id) {
+      const { error: attachError } = await this.client
+        .from('employees')
+        .update({ user_id: userId })
+        .eq('id', mateuszEmployee.id);
+      if (attachError) throw new Error(attachError.message);
+    }
+
+    return true;
+  }
+
+  private async ensureUserWorkspaceAndSeed(userId: string): Promise<void> {
+    if (!userId || userId.startsWith('u-')) return;
+
+    const profile = await this.authProfile(userId);
+    const { data: existingUser, error: userError } = await this.client
+      .from('app_users')
+      .select('id, workspace_id, email')
+      .eq('id', userId)
+      .maybeSingle();
+    if (userError) throw new Error(userError.message);
+    if (existingUser) {
+      if (isOwnerEmail(profile.email)) {
+        const teamId = await this.ensureCreativeTeam(String(existingUser.workspace_id), userId);
+        await this.ensureCreativeEmployees(String(existingUser.workspace_id), teamId);
+        await this.ensureMember(teamId, userId, 'admin');
+      } else {
+        await this.attachMateuszWorkUser(userId, profile);
+      }
+      return;
+    }
+
+    if (await this.attachMateuszWorkUser(userId, profile)) return;
 
     const workspaceId = randomUUID();
     const teamId = randomUUID();
@@ -252,7 +439,7 @@ export class SupabaseStore implements DataStore {
 
     const workspaceInsert: WorkspaceRow = {
       id: workspaceId,
-      name: `${seedWorkspace.name} ${authUser.user.email ?? ''}`.trim(),
+      name: `${seedWorkspace.name} ${profile.email}`.trim(),
       google_auth_enabled: true,
       jira_connected: false,
       slack_connected: false
@@ -263,9 +450,9 @@ export class SupabaseStore implements DataStore {
     const userRow: AppUserRow = {
       id: userId,
       workspace_id: workspaceId,
-      email: authUser.user.email ?? `user-${userId}@span.local`,
-      name: authUser.user.user_metadata?.name ?? authUser.user.email?.split('@')[0] ?? 'Uzytkownik',
-      google_sub: authUser.user.user_metadata?.sub ?? null,
+      email: profile.email,
+      name: isOwnerEmail(profile.email) ? 'Mateusz admin' : profile.name,
+      google_sub: profile.googleSub,
       slack_user_id: null
     };
     const { error: appUserError } = await this.client.from('app_users').insert(userRow);
@@ -274,7 +461,7 @@ export class SupabaseStore implements DataStore {
     const teamRow: TeamRow = {
       id: teamId,
       workspace_id: workspaceId,
-      name: 'Design Team',
+      name: CREATIVE_TEAM_NAME,
       pm_user_id: userId,
       edit_mode: 'collaborative'
     };
@@ -288,14 +475,14 @@ export class SupabaseStore implements DataStore {
     });
     if (memberError) throw new Error(memberError.message);
 
-    const employeeRows: EmployeeRow[] = seedEmployees.map((employee, index) => ({
+    const employeeRows: EmployeeRow[] = CREATIVE_EMPLOYEES.map((employee) => ({
       id: randomUUID(),
       workspace_id: workspaceId,
       team_id: teamId,
-      user_id: index === 0 ? userId : null,
-      name: index === 0 ? userRow.name : employee.name,
+      user_id: null,
+      name: employee.name,
       active: true,
-      tint_color: employee.tintColor ?? null
+      tint_color: employee.tintColor
     }));
     const { data: insertedEmployees, error: employeeError } = await this.client
       .from('employees')
@@ -339,8 +526,8 @@ export class SupabaseStore implements DataStore {
       if (found) taskMap.set(found.id, task.id);
     });
 
-    const marcinEmployee = employees[0];
-    const mateuszEmployee = employees[1] ?? employees[0];
+    const marcinEmployee = employees.find((employee) => employee.name.toLowerCase().includes('marcin')) ?? employees[0];
+    const mateuszEmployee = employees.find((employee) => employee.name.toLowerCase().includes('mateusz')) ?? employees[0];
     const assignmentRows: AssignmentRow[] = seedAssignments.map((assignment) => ({
       id: randomUUID(),
       workspace_id: workspaceId,
@@ -659,6 +846,169 @@ export class SupabaseStore implements DataStore {
 
     const { error: taskError } = await this.client.from('tasks').insert(newTask);
     if (taskError) throw new Error(taskError.message);
+
+    return this.snapshot(params.teamId, params.userId);
+  }
+
+  async updateTeamSettings(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    editMode: TeamEditMode;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz nazwę teamu.');
+
+    const { error } = await this.client
+      .from('teams')
+      .update({
+        name,
+        edit_mode: params.editMode
+      })
+      .eq('id', params.teamId);
+    if (error) throw new Error(error.message);
+
+    return this.snapshot(params.teamId, params.userId);
+  }
+
+  async createTeam(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    editMode: TeamEditMode;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz nazwę teamu.');
+
+    const newTeam: TeamRow = {
+      id: randomUUID(),
+      workspace_id: team.workspaceId,
+      name,
+      pm_user_id: params.userId,
+      edit_mode: params.editMode
+    };
+
+    const { error: teamError } = await this.client.from('teams').insert(newTeam);
+    if (teamError) throw new Error(teamError.message);
+
+    const { error: memberError } = await this.client.from('team_members').insert({
+      team_id: newTeam.id,
+      user_id: params.userId,
+      role
+    });
+    if (memberError) throw new Error(memberError.message);
+
+    return this.snapshot(newTeam.id, params.userId);
+  }
+
+  async createEmployee(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    tintColor?: string;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz imię pracownika.');
+
+    const employee: EmployeeRow = {
+      id: randomUUID(),
+      workspace_id: team.workspaceId,
+      team_id: params.teamId,
+      user_id: null,
+      name,
+      active: true,
+      tint_color: params.tintColor || null
+    };
+
+    const { error } = await this.client.from('employees').insert(employee);
+    if (error) throw new Error(error.message);
+
+    return this.snapshot(params.teamId, params.userId);
+  }
+
+  async updateEmployee(params: {
+    teamId: string;
+    userId: string;
+    employeeId: string;
+    name?: string;
+    tintColor?: string;
+    active?: boolean;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const { data: currentEmployee, error: employeeError } = await this.client
+      .from('employees')
+      .select('id, name, tint_color')
+      .eq('id', params.employeeId)
+      .eq('team_id', params.teamId)
+      .maybeSingle();
+    if (employeeError) throw new Error(employeeError.message);
+    if (!currentEmployee) throw new Error('Nie znaleziono pracownika.');
+
+    const name = params.name === undefined ? String(currentEmployee.name) : params.name.trim();
+    if (!name) throw new Error('Wpisz imię pracownika.');
+
+    const { error } = await this.client
+      .from('employees')
+      .update({
+        name,
+        tint_color: params.tintColor ?? currentEmployee.tint_color ?? null,
+        active: params.active
+      })
+      .eq('id', params.employeeId)
+      .eq('team_id', params.teamId);
+    if (error) throw new Error(error.message);
+
+    return this.snapshot(params.teamId, params.userId);
+  }
+
+  async updateTeamMemberRole(params: {
+    teamId: string;
+    userId: string;
+    memberUserId: string;
+    role: UserRole;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const { data: currentUser, error: currentUserError } = await this.client
+      .from('app_users')
+      .select('email')
+      .eq('id', params.userId)
+      .maybeSingle();
+    if (currentUserError) throw new Error(currentUserError.message);
+    assertCanGrantRole(currentUser?.email ? String(currentUser.email) : undefined, params.role);
+
+    const { data: member, error: memberError } = await this.client
+      .from('team_members')
+      .select('team_id, user_id')
+      .eq('team_id', params.teamId)
+      .eq('user_id', params.memberUserId)
+      .maybeSingle();
+    if (memberError) throw new Error(memberError.message);
+    if (!member) throw new Error('Nie znaleziono członka teamu.');
+
+    const { error } = await this.client
+      .from('team_members')
+      .update({ role: params.role })
+      .eq('team_id', params.teamId)
+      .eq('user_id', params.memberUserId);
+    if (error) throw new Error(error.message);
 
     return this.snapshot(params.teamId, params.userId);
   }

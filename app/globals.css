@@ -729,7 +729,9 @@ h2 {
 }
 
 .settings-modal {
-  width: min(460px, calc(100vw - 36px));
+  width: min(720px, calc(100vw - 36px));
+  max-height: calc(100vh - 36px);
+  overflow: auto;
   background: var(--panel);
   border: 0.5px solid var(--line2);
   border-radius: 16px;
@@ -774,6 +776,33 @@ h2 {
   margin-top: 8px;
 }
 
+.settings-form {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-form input,
+.settings-form select {
+  width: 100%;
+}
+
+.settings-inline {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-note {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fff7ea;
+  border: 0.5px solid #efd8aa;
+  border-radius: 12px;
+  color: #8a6427;
+  font-size: 13px;
+}
+
 .settings-label {
   color: var(--ter);
   font-size: 11px;
@@ -809,6 +838,59 @@ h2 {
   height: 9px;
   border-radius: 999px;
   display: inline-block;
+}
+
+.employee-settings-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.member-settings-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.member-settings-row {
+  display: grid;
+  grid-template-columns: 1fr 150px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  background: #fff;
+  border: 0.5px solid var(--line);
+  border-radius: 12px;
+}
+
+.member-name {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.member-email {
+  margin-top: 2px;
+  color: var(--ter);
+  font-size: 12px;
+}
+
+.employee-settings-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 42px auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.color-input {
+  width: 42px !important;
+  min-width: 42px;
+  height: 42px;
+  padding: 4px;
+}
+
+.danger-btn {
+  color: #9e3f30 !important;
+  border-color: #f3beb3 !important;
 }
 
 .login-shell {

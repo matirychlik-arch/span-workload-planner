@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { seedAssignments, seedEmployees, seedEpics, seedTasks, seedTeamMembers, seedTeams, seedUsers, seedWorkspace } from '@/lib/data/mock-seed';
 import { resolveSticky } from '@/lib/domain/sticky';
-import { Assignment, DataStore, PlannerSnapshot, Team, TeamMember, UserRole } from '@/lib/domain/types';
+import { Assignment, DataStore, PlannerSnapshot, Team, TeamEditMode, TeamMember, UserRole } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
+import { assertCanGrantRole, assertCanManagePeople } from '@/lib/security/roles';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
 
 type LocalState = {
@@ -110,6 +111,10 @@ function snapshotForTeam(state: LocalState, teamId: string, userId: string): Pla
     currentRole: role,
     canEdit
   };
+}
+
+function userEmail(state: LocalState, userId: string): string | undefined {
+  return state.users.find((user) => user.id === userId)?.email;
 }
 
 export class LocalStore implements DataStore {
@@ -258,6 +263,135 @@ export class LocalStore implements DataStore {
       epicId,
       status: 'todo'
     });
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  async updateTeamSettings(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    editMode: TeamEditMode;
+  }): Promise<PlannerSnapshot> {
+    const { role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz nazwę teamu.');
+
+    this.state.teams = this.state.teams.map((team) =>
+      team.id === params.teamId
+        ? {
+            ...team,
+            name,
+            editMode: params.editMode
+          }
+        : team
+    );
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  async createTeam(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    editMode: TeamEditMode;
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz nazwę teamu.');
+
+    const newTeamId = `team-${randomUUID()}`;
+    this.state.teams.push({
+      id: newTeamId,
+      workspaceId: team.workspaceId,
+      name,
+      pmUserId: params.userId,
+      editMode: params.editMode
+    });
+    this.state.teamMembers.push({
+      teamId: newTeamId,
+      userId: params.userId,
+      role
+    });
+
+    return snapshotForTeam(this.state, newTeamId, params.userId);
+  }
+
+  async createEmployee(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    tintColor?: string;
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz imię pracownika.');
+
+    this.state.employees.push({
+      id: `emp-${randomUUID()}`,
+      workspaceId: team.workspaceId,
+      teamId: params.teamId,
+      name,
+      active: true,
+      tintColor: params.tintColor || undefined
+    });
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  async updateEmployee(params: {
+    teamId: string;
+    userId: string;
+    employeeId: string;
+    name?: string;
+    tintColor?: string;
+    active?: boolean;
+  }): Promise<PlannerSnapshot> {
+    const { role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    const target = this.state.employees.find((employee) => employee.id === params.employeeId && employee.teamId === params.teamId);
+    if (!target) throw new Error('Nie znaleziono pracownika.');
+
+    const name = params.name === undefined ? target.name : params.name.trim();
+    if (!name) throw new Error('Wpisz imię pracownika.');
+
+    this.state.employees = this.state.employees.map((employee) =>
+      employee.id === params.employeeId
+        ? {
+            ...employee,
+            name,
+            tintColor: params.tintColor ?? employee.tintColor,
+            active: params.active ?? employee.active
+          }
+        : employee
+    );
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  async updateTeamMemberRole(params: {
+    teamId: string;
+    userId: string;
+    memberUserId: string;
+    role: UserRole;
+  }): Promise<PlannerSnapshot> {
+    const { role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    assertCanGrantRole(userEmail(this.state, params.userId), params.role);
+
+    const member = this.state.teamMembers.find(
+      (item) => item.teamId === params.teamId && item.userId === params.memberUserId
+    );
+    if (!member) throw new Error('Nie znaleziono członka teamu.');
+
+    this.state.teamMembers = this.state.teamMembers.map((item) =>
+      item.teamId === params.teamId && item.userId === params.memberUserId
+        ? { ...item, role: params.role }
+        : item
+    );
 
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
