@@ -157,6 +157,9 @@ export function PlannerApp() {
   const [newEmployeeName, setNewEmployeeName] = useState('');
   const [newEmployeeTint, setNewEmployeeTint] = useState(PERSON_TINTS[0]);
   const [employeeDrafts, setEmployeeDrafts] = useState<Record<string, { name: string; tintColor: string }>>({});
+  const [newEpicName, setNewEpicName] = useState('');
+  const [newEpicColor, setNewEpicColor] = useState('#4A7FF8');
+  const [epicDrafts, setEpicDrafts] = useState<Record<string, { name: string; color: string }>>({});
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
@@ -835,6 +838,17 @@ export function PlannerApp() {
         ])
       )
     );
+    setEpicDrafts(
+      Object.fromEntries(
+        snapshot.epics.map((epic) => [
+          epic.id,
+          {
+            name: epic.name,
+            color: epic.color
+          }
+        ])
+      )
+    );
   }, [currentTeam?.editMode, currentTeam?.name, settingsOpen, snapshot]);
 
   const refreshTeams = useCallback(async (nextTeamId?: string) => {
@@ -971,6 +985,86 @@ export function PlannerApp() {
         updateSnapshot(next);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Nie udało się usunąć pracownika.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, teamId, updateSnapshot]
+  );
+
+  const handleCreateEpic = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!teamId || !canManageSettings || !newEpicName.trim()) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/epics/create', {
+          method: 'POST',
+          body: JSON.stringify({
+            teamId,
+            name: newEpicName,
+            color: newEpicColor
+          })
+        });
+        updateSnapshot(next);
+        setNewEpicName('');
+        setNewEpicColor('#4A7FF8');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się dodać epica.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, newEpicColor, newEpicName, teamId, updateSnapshot]
+  );
+
+  const handleSaveEpic = useCallback(
+    async (epicId: string) => {
+      if (!teamId || !canManageSettings) return;
+      const draft = epicDrafts[epicId];
+      if (!draft) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/epics/update', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            teamId,
+            epicId,
+            name: draft.name,
+            color: draft.color
+          })
+        });
+        updateSnapshot(next);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się zapisać epica.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, epicDrafts, teamId, updateSnapshot]
+  );
+
+  const handleDeleteEpic = useCallback(
+    async (epicId: string) => {
+      if (!teamId || !canManageSettings) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/epics/delete', {
+          method: 'POST',
+          body: JSON.stringify({
+            teamId,
+            epicId
+          })
+        });
+        updateSnapshot(next);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się usunąć epica.';
         setError(message);
       } finally {
         setSettingsSaving(false);
@@ -1415,7 +1509,7 @@ export function PlannerApp() {
               <div className="settings-note">Role admin może nadawać tylko {OWNER_EMAIL}.</div>
             )}
             <form className="settings-section settings-form" onSubmit={handleSaveTeamSettings}>
-              <div className="settings-label">Aktywny team</div>
+              <div className="settings-label">Nazwa obecnie otwartego teamu</div>
               <input
                 value={teamNameDraft}
                 onChange={(event) => setTeamNameDraft(event.target.value)}
@@ -1559,13 +1653,81 @@ export function PlannerApp() {
             </div>
             <div className="settings-section">
               <div className="settings-label">Epiki</div>
-              <div className="settings-list">
-                {(snapshot?.epics ?? []).map((epic) => (
-                  <span key={epic.id}>
-                    <i style={{ background: epic.color }} />
-                    {epic.name}
-                  </span>
-                ))}
+              <form className="epic-create-row" onSubmit={handleCreateEpic}>
+                <input
+                  value={newEpicName}
+                  onChange={(event) => setNewEpicName(event.target.value)}
+                  disabled={!canManageSettings || settingsSaving}
+                  placeholder="Nazwa epica"
+                />
+                <input
+                  className="color-input"
+                  type="color"
+                  value={newEpicColor}
+                  onChange={(event) => setNewEpicColor(event.target.value)}
+                  disabled={!canManageSettings || settingsSaving}
+                  aria-label="Kolor epica"
+                />
+                <button type="submit" disabled={!canManageSettings || settingsSaving || !newEpicName.trim()}>
+                  Dodaj
+                </button>
+              </form>
+              <div className="epic-settings-list">
+                {(snapshot?.epics ?? []).map((epic) => {
+                  const draft = epicDrafts[epic.id] ?? {
+                    name: epic.name,
+                    color: epic.color
+                  };
+                  return (
+                    <div key={epic.id} className="epic-settings-row">
+                      <input
+                        value={draft.name}
+                        onChange={(event) =>
+                          setEpicDrafts((prev) => ({
+                            ...prev,
+                            [epic.id]: {
+                              ...draft,
+                              name: event.target.value
+                            }
+                          }))
+                        }
+                        disabled={!canManageSettings || settingsSaving}
+                      />
+                      <input
+                        className="color-input"
+                        type="color"
+                        value={draft.color}
+                        onChange={(event) =>
+                          setEpicDrafts((prev) => ({
+                            ...prev,
+                            [epic.id]: {
+                              ...draft,
+                              color: event.target.value
+                            }
+                          }))
+                        }
+                        disabled={!canManageSettings || settingsSaving}
+                        aria-label={`Kolor epica ${epic.name}`}
+                      />
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void handleSaveEpic(epic.id)}
+                        disabled={!canManageSettings || settingsSaving || !draft.name.trim()}
+                      >
+                        Zapisz
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary danger-btn"
+                        onClick={() => void handleDeleteEpic(epic.id)}
+                        disabled={!canManageSettings || settingsSaving}
+                      >
+                        Usuń
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </section>

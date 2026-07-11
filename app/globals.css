@@ -852,6 +852,27 @@ h2 {
   margin-top: 10px;
 }
 
+.epic-create-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 42px auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.epic-settings-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.epic-settings-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 42px auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
 .member-settings-list {
   display: grid;
   gap: 8px;

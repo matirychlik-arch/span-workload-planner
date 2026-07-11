@@ -372,6 +372,85 @@ export class LocalStore implements DataStore {
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
+  async createEpic(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    color: string;
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz nazwę epica.');
+
+    this.state.epics.push({
+      id: `ep-${randomUUID()}`,
+      workspaceId: team.workspaceId,
+      name,
+      color: params.color || '#4A7FF8'
+    });
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  async updateEpic(params: {
+    teamId: string;
+    userId: string;
+    epicId: string;
+    name?: string;
+    color?: string;
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    const target = this.state.epics.find((epic) => epic.id === params.epicId && epic.workspaceId === team.workspaceId);
+    if (!target) throw new Error('Nie znaleziono epica.');
+    const name = params.name === undefined ? target.name : params.name.trim();
+    if (!name) throw new Error('Wpisz nazwę epica.');
+
+    this.state.epics = this.state.epics.map((epic) =>
+      epic.id === params.epicId
+        ? {
+            ...epic,
+            name,
+            color: params.color ?? epic.color
+          }
+        : epic
+    );
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  async deleteEpic(params: {
+    teamId: string;
+    userId: string;
+    epicId: string;
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    const target = this.state.epics.find((epic) => epic.id === params.epicId && epic.workspaceId === team.workspaceId);
+    if (!target) throw new Error('Nie znaleziono epica.');
+
+    let fallback = this.state.epics.find((epic) => epic.workspaceId === team.workspaceId && epic.id !== params.epicId);
+    if (!fallback) {
+      fallback = {
+        id: `ep-${randomUUID()}`,
+        workspaceId: team.workspaceId,
+        name: 'Bez epica',
+        color: '#9A9890'
+      };
+      this.state.epics.push(fallback);
+    }
+
+    this.state.tasks = this.state.tasks.map((task) =>
+      task.workspaceId === team.workspaceId && task.epicId === params.epicId
+        ? { ...task, epicId: fallback.id }
+        : task
+    );
+    this.state.epics = this.state.epics.filter((epic) => epic.id !== params.epicId);
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
   async updateTeamMemberRole(params: {
     teamId: string;
     userId: string;

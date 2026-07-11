@@ -157,6 +157,24 @@ export interface DataStore {
     tintColor?: string;
     active?: boolean;
   }): Promise<PlannerSnapshot>;
+  createEpic(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+    color: string;
+  }): Promise<PlannerSnapshot>;
+  updateEpic(params: {
+    teamId: string;
+    userId: string;
+    epicId: string;
+    name?: string;
+    color?: string;
+  }): Promise<PlannerSnapshot>;
+  deleteEpic(params: {
+    teamId: string;
+    userId: string;
+    epicId: string;
+  }): Promise<PlannerSnapshot>;
   updateTeamMemberRole(params: {
     teamId: string;
     userId: string;
