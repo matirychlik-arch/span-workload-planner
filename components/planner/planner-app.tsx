@@ -173,6 +173,9 @@ export function PlannerApp() {
   const centeredOnceRef = useRef(false);
   const resizeCommitRef = useRef<{ assignmentId: string; durationHours: number; durationDays: number } | null>(null);
   const resizeDraftsRef = useRef<Record<string, { durationHours: number; durationDays: number }>>({});
+  const plannerMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const latestPlannerMutationIdRef = useRef(0);
+  const pendingPlannerMutationCountRef = useRef(0);
 
   const visibleDays = useMemo(() => {
     const start = parseIsoDate(timelineStartIso);
@@ -249,9 +252,45 @@ export function PlannerApp() {
         to: rangeEnd
       });
       const data = await api<PlannerSnapshot>(`/api/planner?${query.toString()}`);
-      updateSnapshot(data);
+      if (pendingPlannerMutationCountRef.current === 0) {
+        updateSnapshot(data);
+      }
     },
     [updateSnapshot]
+  );
+
+  const queuePlannerCommit = useCallback(
+    (request: () => Promise<PlannerSnapshot>, errorFallback: string) => {
+      const mutationId = latestPlannerMutationIdRef.current + 1;
+      latestPlannerMutationIdRef.current = mutationId;
+      pendingPlannerMutationCountRef.current += 1;
+
+      const run = async () => {
+        try {
+          const next = await request();
+          pendingPlannerMutationCountRef.current = Math.max(0, pendingPlannerMutationCountRef.current - 1);
+          if (mutationId === latestPlannerMutationIdRef.current && pendingPlannerMutationCountRef.current === 0) {
+            updateSnapshot(next);
+          }
+        } catch (err) {
+          pendingPlannerMutationCountRef.current = Math.max(0, pendingPlannerMutationCountRef.current - 1);
+          const message = err instanceof Error ? err.message : errorFallback;
+          setError(message);
+          if (mutationId === latestPlannerMutationIdRef.current && teamId) {
+            try {
+              await loadPlanner(teamId, timelineStartIso);
+            } catch (reloadErr) {
+              const reloadMessage = reloadErr instanceof Error ? reloadErr.message : 'Nie udało się odświeżyć plannera.';
+              setError(`${message} ${reloadMessage}`);
+            }
+          }
+        }
+      };
+
+      plannerMutationQueueRef.current = plannerMutationQueueRef.current.catch(() => undefined).then(run);
+      void plannerMutationQueueRef.current;
+    },
+    [loadPlanner, teamId, timelineStartIso, updateSnapshot]
   );
 
   useEffect(() => {
@@ -560,126 +599,120 @@ export function PlannerApp() {
       event.preventDefault();
       if (!canEdit || !teamId || !dragContext) return;
 
-      const previousSnapshot = snapshot;
       const copyMode = event.altKey;
       const optimisticSnapshot = buildOptimisticDropSnapshot(dragContext, target, copyMode);
       if (optimisticSnapshot) updateSnapshot(optimisticSnapshot);
 
-      try {
-        if (dragContext.source === 'backlog') {
-          if (isOptimisticId(dragContext.taskId)) {
-            setError('Task jeszcze się zapisuje. Poczekaj sekundę i przeciągnij go ponownie.');
-            return;
-          }
-          const next = await api<PlannerSnapshot>('/api/assignments/create', {
-            method: 'POST',
-            body: JSON.stringify({
-              teamId,
-              taskId: dragContext.taskId,
-              employeeId: target.employeeId,
-              startDate: target.date,
-              startHour: target.startHour
-            })
-          });
-          updateSnapshot(next);
-          setSelectedIds(new Set());
+      if (dragContext.source === 'backlog') {
+        if (isOptimisticId(dragContext.taskId)) {
+          setError('Task jeszcze się zapisuje. Poczekaj sekundę i przeciągnij go ponownie.');
+          setDragContext(null);
+          clearDropPreview();
           return;
         }
-
-        const payload = {
-          teamId,
-          assignmentIds: dragContext.assignmentIds,
-          anchorAssignmentId: dragContext.anchorAssignmentId,
-          targetEmployeeId: target.employeeId,
-          targetDate: target.date,
-          targetStartHour: target.startHour
-        };
-        const endpoint = copyMode ? '/api/assignments/copy' : '/api/assignments/move';
-        const next = await api<PlannerSnapshot>(endpoint, {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-        updateSnapshot(next);
+        queuePlannerCommit(
+          () =>
+            api<PlannerSnapshot>('/api/assignments/create', {
+              method: 'POST',
+              body: JSON.stringify({
+                teamId,
+                taskId: dragContext.taskId,
+                employeeId: target.employeeId,
+                startDate: target.date,
+                startHour: target.startHour
+              })
+            }),
+          'Błąd podczas dodawania assignmentu.'
+        );
         setSelectedIds(new Set());
-      } catch (err) {
-        if (previousSnapshot) updateSnapshot(previousSnapshot);
-        const message = err instanceof Error ? err.message : 'Błąd podczas przenoszenia.';
-        setError(message);
-      } finally {
         setDragContext(null);
         clearDropPreview();
+        return;
       }
+
+      const payload = {
+        teamId,
+        assignmentIds: dragContext.assignmentIds,
+        anchorAssignmentId: dragContext.anchorAssignmentId,
+        targetEmployeeId: target.employeeId,
+        targetDate: target.date,
+        targetStartHour: target.startHour
+      };
+      const endpoint = copyMode ? '/api/assignments/copy' : '/api/assignments/move';
+      queuePlannerCommit(
+        () =>
+          api<PlannerSnapshot>(endpoint, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          }),
+        'Błąd podczas przenoszenia.'
+      );
+      setSelectedIds(new Set());
+      setDragContext(null);
+      clearDropPreview();
     },
-    [buildOptimisticDropSnapshot, canEdit, clearDropPreview, dragContext, snapshot, teamId, updateSnapshot]
+    [buildOptimisticDropSnapshot, canEdit, clearDropPreview, dragContext, queuePlannerCommit, teamId, updateSnapshot]
   );
 
   const handleDelete = useCallback(
     async (assignmentId: string) => {
       if (!teamId || !canEdit) return;
       const toDelete = selectedIds.has(assignmentId) && selectedIds.size > 0 ? Array.from(selectedIds) : [assignmentId];
-      const previousSnapshot = snapshot;
-      try {
-        if (snapshot) {
-          const removeSet = new Set(toDelete);
-          updateSnapshot({
-            ...snapshot,
-            assignments: resolveSticky(snapshot.assignments.filter((assignment) => !removeSet.has(assignment.id)))
-          });
-        }
-        const next = await api<PlannerSnapshot>('/api/assignments/delete', {
-          method: 'POST',
-          body: JSON.stringify({ teamId, assignmentIds: toDelete })
+      if (snapshot) {
+        const removeSet = new Set(toDelete);
+        updateSnapshot({
+          ...snapshot,
+          assignments: resolveSticky(snapshot.assignments.filter((assignment) => !removeSet.has(assignment.id)))
         });
-        updateSnapshot(next);
-        setSelectedIds(new Set());
-      } catch (err) {
-        if (previousSnapshot) updateSnapshot(previousSnapshot);
-        const message = err instanceof Error ? err.message : 'Błąd podczas usuwania.';
-        setError(message);
       }
+      queuePlannerCommit(
+        () =>
+          api<PlannerSnapshot>('/api/assignments/delete', {
+            method: 'POST',
+            body: JSON.stringify({ teamId, assignmentIds: toDelete })
+          }),
+        'Błąd podczas usuwania.'
+      );
+      setSelectedIds(new Set());
     },
-    [canEdit, selectedIds, snapshot, teamId, updateSnapshot]
+    [canEdit, queuePlannerCommit, selectedIds, snapshot, teamId, updateSnapshot]
   );
 
   const handleResizeCommit = useCallback(
     async (assignmentId: string, durationHours?: number, durationDays?: number) => {
       if (!teamId || !canEdit) return;
-      const previousSnapshot = snapshot;
-      try {
-        if (snapshot) {
-          const nextAssignments = snapshot.assignments.map((assignment) =>
-            assignment.id === assignmentId
-              ? {
-                  ...assignment,
-                  durationHours: durationHours ?? assignment.durationHours,
-                  durationDays: durationDays ?? assignment.durationDays,
-                  version: assignment.version + 1,
-                  updatedAt: new Date().toISOString()
-                }
-              : assignment
-          );
-          updateSnapshot({
-            ...snapshot,
-            assignments: resolveSticky(nextAssignments, assignmentId)
-          });
-        }
-        const next = await api<PlannerSnapshot>('/api/assignments/resize', {
-          method: 'POST',
-          body: JSON.stringify({
-            teamId,
-            assignmentId,
-            durationHours,
-            durationDays
-          })
+      if (snapshot) {
+        const nextAssignments = snapshot.assignments.map((assignment) =>
+          assignment.id === assignmentId
+            ? {
+                ...assignment,
+                durationHours: durationHours ?? assignment.durationHours,
+                durationDays: durationDays ?? assignment.durationDays,
+                version: assignment.version + 1,
+                updatedAt: new Date().toISOString()
+              }
+            : assignment
+        );
+        updateSnapshot({
+          ...snapshot,
+          assignments: resolveSticky(nextAssignments, assignmentId)
         });
-        updateSnapshot(next);
-      } catch (err) {
-        if (previousSnapshot) updateSnapshot(previousSnapshot);
-        const message = err instanceof Error ? err.message : 'Błąd podczas resize.';
-        setError(message);
       }
+      queuePlannerCommit(
+        () =>
+          api<PlannerSnapshot>('/api/assignments/resize', {
+            method: 'POST',
+            body: JSON.stringify({
+              teamId,
+              assignmentId,
+              durationHours,
+              durationDays
+            })
+          }),
+        'Błąd podczas resize.'
+      );
     },
-    [canEdit, snapshot, teamId, updateSnapshot]
+    [canEdit, queuePlannerCommit, snapshot, teamId, updateSnapshot]
   );
 
   useEffect(() => {

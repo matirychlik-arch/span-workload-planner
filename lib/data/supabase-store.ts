@@ -228,6 +228,39 @@ function touch(assignment: Assignment): Assignment {
   };
 }
 
+function assignmentChanged(previous: Assignment, next: Assignment): boolean {
+  return (
+    previous.workspaceId !== next.workspaceId ||
+    previous.teamId !== next.teamId ||
+    previous.taskId !== next.taskId ||
+    previous.employeeId !== next.employeeId ||
+    previous.startDate !== next.startDate ||
+    previous.startHour !== next.startHour ||
+    previous.desiredStartHour !== next.desiredStartHour ||
+    previous.durationHours !== next.durationHours ||
+    previous.durationDays !== next.durationDays ||
+    (previous.completionRatio ?? null) !== (next.completionRatio ?? null)
+  );
+}
+
+function changedAssignments(previous: Assignment[], next: Assignment[]): Assignment[] {
+  const previousById = new Map(previous.map((assignment) => [assignment.id, assignment]));
+  const changed: Assignment[] = [];
+
+  for (const assignment of next) {
+    const before = previousById.get(assignment.id);
+    if (!before) {
+      changed.push(assignment);
+      continue;
+    }
+    if (assignmentChanged(before, assignment)) {
+      changed.push(touch({ ...assignment, version: before.version, updatedAt: before.updatedAt }));
+    }
+  }
+
+  return changed;
+}
+
 type TeamContext = {
   team: Team;
   members: TeamMember[];
@@ -623,6 +656,10 @@ export class SupabaseStore implements DataStore {
     if (error) throw new Error(error.message);
   }
 
+  private async persistResolvedAssignments(previous: Assignment[], resolved: Assignment[]): Promise<void> {
+    await this.persistAssignments(changedAssignments(previous, resolved));
+  }
+
   private async snapshot(teamId: string, userId: string): Promise<PlannerSnapshot> {
     const { team, members, role } = await this.teamContext(teamId, userId);
     const canEdit = role === 'admin' || role === 'pm' || (role === 'employee' && team.editMode === 'collaborative');
@@ -722,19 +759,17 @@ export class SupabaseStore implements DataStore {
       if (!movedIds.has(assignment.id)) return assignment;
       const original = selected.find((item) => item.id === assignment.id);
       if (!original) return assignment;
-      return normalizeAssignment(
-        touch({
-          ...assignment,
-          employeeId: params.targetEmployeeId,
-          startDate: shiftIsoDate(original.startDate, dayDelta),
-          startHour: original.startHour + hourDelta,
-          desiredStartHour: original.startHour + hourDelta
-        })
-      );
+      return normalizeAssignment({
+        ...assignment,
+        employeeId: params.targetEmployeeId,
+        startDate: shiftIsoDate(original.startDate, dayDelta),
+        startHour: original.startHour + hourDelta,
+        desiredStartHour: original.startHour + hourDelta
+      });
     });
 
-    const resolved = resolveSticky(nextAssignments, params.anchorAssignmentId).map(touch);
-    await this.persistAssignments(resolved);
+    const resolved = resolveSticky(nextAssignments, params.anchorAssignmentId);
+    await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
 
@@ -777,8 +812,8 @@ export class SupabaseStore implements DataStore {
     });
 
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
-    const resolved = resolveSticky([...allAssignments, created], created.id).map(touch);
-    await this.persistAssignments(resolved);
+    const resolved = resolveSticky([...allAssignments, created], created.id);
+    await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
 
@@ -1152,8 +1187,8 @@ export class SupabaseStore implements DataStore {
     if (deleteError) throw new Error(deleteError.message);
 
     const remaining = await this.loadAssignmentsForTeam(params.teamId);
-    const resolved = resolveSticky(remaining).map(touch);
-    await this.persistAssignments(resolved);
+    const resolved = resolveSticky(remaining);
+    await this.persistResolvedAssignments(remaining, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
 
@@ -1173,17 +1208,15 @@ export class SupabaseStore implements DataStore {
     const target = allAssignments.find((assignment) => assignment.id === params.assignmentId);
     if (!target) throw new Error('Nie znaleziono assignmentu.');
 
-    const updated = normalizeAssignment(
-      touch({
-        ...target,
-        durationHours: params.durationHours ?? target.durationHours,
-        durationDays: params.durationDays ?? target.durationDays
-      })
-    );
+    const updated = normalizeAssignment({
+      ...target,
+      durationHours: params.durationHours ?? target.durationHours,
+      durationDays: params.durationDays ?? target.durationDays
+    });
 
     const nextAssignments = allAssignments.map((assignment) => (assignment.id === target.id ? updated : assignment));
-    const resolved = resolveSticky(nextAssignments, target.id).map(touch);
-    await this.persistAssignments(resolved);
+    const resolved = resolveSticky(nextAssignments, target.id);
+    await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
 
@@ -1222,8 +1255,8 @@ export class SupabaseStore implements DataStore {
       })
     );
 
-    const resolved = resolveSticky([...allAssignments, ...copies], copies[0]?.id).map(touch);
-    await this.persistAssignments(resolved);
+    const resolved = resolveSticky([...allAssignments, ...copies], copies[0]?.id);
+    await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
 
@@ -1251,19 +1284,17 @@ export class SupabaseStore implements DataStore {
     const nextAssignments = allAssignments.map((assignment) => {
       const move = moveMap.get(assignment.id);
       if (!move) return assignment;
-      return normalizeAssignment(
-        touch({
-          ...assignment,
-          employeeId: move.employeeId,
-          startDate: move.date,
-          startHour: move.startHour,
-          desiredStartHour: move.startHour
-        })
-      );
+      return normalizeAssignment({
+        ...assignment,
+        employeeId: move.employeeId,
+        startDate: move.date,
+        startHour: move.startHour,
+        desiredStartHour: move.startHour
+      });
     });
 
-    const resolved = resolveSticky(nextAssignments, params.moves[0]?.assignmentId).map(touch);
-    await this.persistAssignments(resolved);
+    const resolved = resolveSticky(nextAssignments, params.moves[0]?.assignmentId);
+    await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
 
