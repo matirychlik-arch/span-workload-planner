@@ -319,6 +319,37 @@ export class LocalStore implements DataStore {
     return snapshotForTeam(this.state, newTeamId, params.userId);
   }
 
+  async deleteTeam(params: { teamId: string; userId: string }): Promise<{ nextTeamId: string }> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const workspaceTeams = this.state.teams.filter((item) => item.workspaceId === team.workspaceId);
+    if (workspaceTeams.length <= 1) {
+      throw new Error('Nie możesz usunąć ostatniego teamu w workspace.');
+    }
+
+    const nextTeam = workspaceTeams.find((item) => item.id !== params.teamId);
+    if (!nextTeam) throw new Error('Nie znaleziono teamu do przełączenia.');
+
+    const employeeIds = new Set(
+      this.state.employees.filter((employee) => employee.teamId === params.teamId).map((employee) => employee.id)
+    );
+    this.state.assignments = this.state.assignments.filter((assignment) => assignment.teamId !== params.teamId);
+    this.state.employees = this.state.employees.filter((employee) => employee.teamId !== params.teamId);
+    this.state.teamMembers = this.state.teamMembers.filter((member) => member.teamId !== params.teamId);
+    this.state.teams = this.state.teams.filter((item) => item.id !== params.teamId);
+    this.state.tasks = this.state.tasks.map((task) =>
+      task.assigneeId && employeeIds.has(task.assigneeId)
+        ? {
+            ...task,
+            assigneeId: undefined
+          }
+        : task
+    );
+
+    return { nextTeamId: nextTeam.id };
+  }
+
   async createEmployee(params: {
     teamId: string;
     userId: string;

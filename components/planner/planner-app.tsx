@@ -945,6 +945,32 @@ export function PlannerApp() {
     [canManageSettings, newTeamName, refreshTeams, teamId, updateSnapshot]
   );
 
+  const handleDeleteTeam = useCallback(async () => {
+    if (!teamId || !canManageSettings || !currentTeam) return;
+    if (teams.length <= 1) {
+      setError('Nie możesz usunąć ostatniego teamu w workspace.');
+      return;
+    }
+    const confirmed = window.confirm(`Usunąć team "${currentTeam.name}" razem z jego pracownikami i planem?`);
+    if (!confirmed) return;
+
+    try {
+      setSettingsSaving(true);
+      setError('');
+      const result = await api<{ nextTeamId: string }>('/api/settings/teams/delete', {
+        method: 'POST',
+        body: JSON.stringify({ teamId })
+      });
+      setSettingsOpen(false);
+      await refreshTeams(result.nextTeamId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Nie udało się usunąć teamu.';
+      setError(message);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }, [canManageSettings, currentTeam, refreshTeams, teamId, teams.length]);
+
   const handleCreateEmployee = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
@@ -1559,6 +1585,14 @@ export function PlannerApp() {
               </select>
               <button type="submit" disabled={!canManageSettings || settingsSaving || !teamNameDraft.trim()}>
                 Zapisz team
+              </button>
+              <button
+                type="button"
+                className="secondary danger-btn"
+                onClick={() => void handleDeleteTeam()}
+                disabled={!canManageSettings || settingsSaving || teams.length <= 1}
+              >
+                Usuń team
               </button>
             </form>
             <form className="settings-section settings-form" onSubmit={handleCreateTeam}>

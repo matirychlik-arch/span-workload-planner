@@ -143,6 +143,10 @@ export interface DataStore {
     name: string;
     editMode: TeamEditMode;
   }): Promise<PlannerSnapshot>;
+  deleteTeam(params: {
+    teamId: string;
+    userId: string;
+  }): Promise<{ nextTeamId: string }>;
   createEmployee(params: {
     teamId: string;
     userId: string;

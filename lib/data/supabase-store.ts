@@ -944,6 +944,35 @@ export class SupabaseStore implements DataStore {
     return this.snapshot(newTeam.id, params.userId);
   }
 
+  async deleteTeam(params: { teamId: string; userId: string }): Promise<{ nextTeamId: string }> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const { data: teams, error: teamsError } = await this.client
+      .from('teams')
+      .select('id')
+      .eq('workspace_id', team.workspaceId);
+    if (teamsError) throw new Error(teamsError.message);
+
+    const workspaceTeams = (teams ?? []).map((item) => String(item.id));
+    if (workspaceTeams.length <= 1) {
+      throw new Error('Nie możesz usunąć ostatniego teamu w workspace.');
+    }
+
+    const nextTeamId = workspaceTeams.find((id) => id !== params.teamId);
+    if (!nextTeamId) throw new Error('Nie znaleziono teamu do przełączenia.');
+
+    const { error: deleteError } = await this.client
+      .from('teams')
+      .delete()
+      .eq('id', params.teamId)
+      .eq('workspace_id', team.workspaceId);
+    if (deleteError) throw new Error(deleteError.message);
+
+    return { nextTeamId };
+  }
+
   async createEmployee(params: {
     teamId: string;
     userId: string;
