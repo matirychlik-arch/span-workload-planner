@@ -6,7 +6,6 @@ import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shift
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
 import { assertCanGrantRole, assertCanManagePeople } from '@/lib/security/roles';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
-import { inferEpicName, parseExcelWorkload } from '@/lib/integrations/excel-workload';
 
 type LocalState = {
   workspace: typeof seedWorkspace;
@@ -708,6 +707,7 @@ export class LocalStore implements DataStore {
     }
     assertCanEditTeam(role, team.editMode);
 
+    const { inferEpicName, parseExcelWorkload } = await import('@/lib/integrations/excel-workload');
     const employees = this.state.employees.filter((employee) => employee.teamId === params.teamId && employee.active);
     const entries = parseExcelWorkload(params.data, employees.map((employee) => employee.name));
     const employeeByImportName = new Map(employees.map((employee) => [importKey(employee.name).split(' ')[0], employee]));

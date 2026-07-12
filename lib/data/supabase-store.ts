@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
-import { inferEpicName, parseExcelWorkload } from '@/lib/integrations/excel-workload';
 import { resolveSticky } from '@/lib/domain/sticky';
 import { Assignment, AppUser, DataStore, Employee, Epic, PlannerSnapshot, Task, Team, TeamEditMode, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
@@ -1426,6 +1425,7 @@ export class SupabaseStore implements DataStore {
     }
     assertCanEditTeam(role, team.editMode);
 
+    const { inferEpicName, parseExcelWorkload } = await import('@/lib/integrations/excel-workload');
     const [employeesResult, epicsResult, tasksResult] = await Promise.all([
       this.client
         .from('employees')

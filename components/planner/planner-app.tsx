@@ -78,11 +78,10 @@ const EDGE_THRESHOLD_DAYS = 3;
 const PERSON_TINTS = ['#EEF3FF', '#F6EFE8', '#EEF7EF', '#F2EDFA', '#FCF5E8', '#EBF4F4'];
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const isFormData = init?.body instanceof FormData;
   const response = await fetch(url, {
     ...init,
     headers: {
-      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+      'Content-Type': 'application/json',
       ...(init?.headers ?? {})
     }
   });
@@ -92,6 +91,19 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(message);
   }
   return body.data;
+}
+
+async function uploadForm<T>(url: string, body: FormData): Promise<T> {
+  const response = await fetch(url, {
+    method: 'POST',
+    body
+  });
+  const payload = (await response.json()) as ApiResponse<T>;
+  if (!response.ok || !payload.ok) {
+    const message = payload && !payload.ok ? payload.error : 'Błąd API.';
+    throw new Error(message);
+  }
+  return payload.data;
 }
 
 function timelineLeadDays() {
@@ -863,11 +875,7 @@ export function PlannerApp() {
         const form = new FormData();
         form.append('teamId', teamId);
         form.append('file', file);
-        await api('/api/excel/import', {
-          method: 'POST',
-          body: form,
-          headers: {}
-        });
+        await uploadForm('/api/excel/import', form);
         await loadPlanner(teamId, timelineStartIso);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Import z Excela nie powiódł się.';
