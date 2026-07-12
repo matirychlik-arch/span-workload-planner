@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, FormEvent } from 'react';
+import type { CSSProperties, ChangeEvent, FormEvent } from 'react';
 import type { Assignment, Epic, PlannerSnapshot, Task, TeamEditMode, UserRole } from '@/lib/domain/types';
 import { resolveSticky } from '@/lib/domain/sticky';
 import { OWNER_EMAIL } from '@/lib/security/roles';
@@ -78,10 +78,11 @@ const EDGE_THRESHOLD_DAYS = 3;
 const PERSON_TINTS = ['#EEF3FF', '#F6EFE8', '#EEF7EF', '#F2EDFA', '#FCF5E8', '#EBF4F4'];
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
+  const isFormData = init?.body instanceof FormData;
   const response = await fetch(url, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...(init?.headers ?? {})
     }
   });
@@ -161,6 +162,7 @@ export function PlannerApp() {
   const [newEpicColor, setNewEpicColor] = useState('#4A7FF8');
   const [epicDrafts, setEpicDrafts] = useState<Record<string, { name: string; color: string }>>({});
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [excelImporting, setExcelImporting] = useState(false);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
@@ -168,6 +170,7 @@ export function PlannerApp() {
     return toIsoDate(addDays(weekStart, -timelineLeadDays()));
   });
   const plannerWrapRef = useRef<HTMLDivElement | null>(null);
+  const excelInputRef = useRef<HTMLInputElement | null>(null);
   const shiftingRef = useRef(false);
   const timelineReloadDisabledRef = useRef(false);
   const centeredOnceRef = useRef(false);
@@ -195,6 +198,7 @@ export function PlannerApp() {
   }, [snapshot?.tasks]);
 
   const canEdit = Boolean(snapshot?.canEdit);
+  const canImportExternal = snapshot?.currentRole === 'admin' || snapshot?.currentRole === 'pm';
 
   const assignmentsForRender = useMemo(() => {
     return (snapshot?.assignments ?? []).map((assignment) => {
@@ -834,7 +838,7 @@ export function PlannerApp() {
   );
 
   const handleImportJira = useCallback(async () => {
-    if (!teamId) return;
+    if (!teamId || !canImportExternal) return;
     try {
       setError('');
       await api('/api/jira/import', {
@@ -846,7 +850,35 @@ export function PlannerApp() {
       const message = err instanceof Error ? err.message : 'Import z Jiry nie powiódł się.';
       setError(message);
     }
-  }, [jiraQuery, loadPlanner, teamId, timelineStartIso]);
+  }, [canImportExternal, jiraQuery, loadPlanner, teamId, timelineStartIso]);
+
+  const handleImportExcel = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      if (!teamId || !canImportExternal) return;
+      const file = event.target.files?.[0];
+      if (!file) return;
+      try {
+        setExcelImporting(true);
+        setError('');
+        const form = new FormData();
+        form.append('teamId', teamId);
+        form.append('file', file);
+        await api('/api/excel/import', {
+          method: 'POST',
+          body: form,
+          headers: {}
+        });
+        await loadPlanner(teamId, timelineStartIso);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Import z Excela nie powiódł się.';
+        setError(message);
+      } finally {
+        setExcelImporting(false);
+        event.target.value = '';
+      }
+    },
+    [canImportExternal, loadPlanner, teamId, timelineStartIso]
+  );
 
   const currentTeam = useMemo(() => teams.find((team) => team.id === teamId), [teams, teamId]);
   const currentUser = useMemo(
@@ -1201,8 +1233,22 @@ export function PlannerApp() {
                 </option>
               ))}
             </select>
-            <button className="secondary jira-btn" onClick={handleImportJira} disabled={!canEdit}>
+            <button className="secondary jira-btn" onClick={handleImportJira} disabled={!canImportExternal}>
               Import z Jiry
+            </button>
+            <input
+              ref={excelInputRef}
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              hidden
+              onChange={handleImportExcel}
+            />
+            <button
+              className="secondary jira-btn"
+              onClick={() => excelInputRef.current?.click()}
+              disabled={!canImportExternal || excelImporting}
+            >
+              {excelImporting ? 'Importuję...' : 'Import Excel'}
             </button>
             <button
               className="add-btn"
@@ -1304,15 +1350,6 @@ export function PlannerApp() {
                   </div>
                 </form>
               )}
-              <div className="section">
-                <input
-                  value={jiraQuery}
-                  onChange={(event) => setJiraQuery(event.target.value)}
-                  disabled={!canEdit}
-                  placeholder="JQL"
-                  style={{ width: '100%' }}
-                />
-              </div>
               <div className="pool">
                 {backlogTasks.map((task) => {
                   const epic = epicById.get(task.epicId);
@@ -1567,6 +1604,18 @@ export function PlannerApp() {
             {canManageSettings && !canGrantAdmins && (
               <div className="settings-note">Role admin może nadawać tylko {OWNER_EMAIL}.</div>
             )}
+            <div className="settings-section settings-form">
+              <div className="settings-label">Jira dla obecnego teamu</div>
+              <input
+                value={jiraQuery}
+                onChange={(event) => setJiraQuery(event.target.value)}
+                disabled={!canManageSettings || settingsSaving}
+                placeholder="JQL, np. project = MV AND status != Done"
+              />
+              <div className="settings-muted">
+                Token Jiry nie jest widoczny w aplikacji. Jeśli firma pozwoli na integrację, zostanie ustawiony po stronie Vercela.
+              </div>
+            </div>
             <form className="settings-section settings-form" onSubmit={handleSaveTeamSettings}>
               <div className="settings-label">Nazwa obecnie otwartego teamu</div>
               <input

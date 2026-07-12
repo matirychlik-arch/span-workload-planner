@@ -215,4 +215,10 @@ export interface DataStore {
     addedTasks: number;
     addedEpics: number;
   }>;
+  importFromExcel(params: { teamId: string; userId: string; fileName: string; data: ArrayBuffer }): Promise<{
+    addedTasks: number;
+    addedAssignments: number;
+    skippedRows: number;
+    skippedEmployees: string[];
+  }>;
 }

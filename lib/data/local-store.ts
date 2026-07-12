@@ -6,6 +6,7 @@ import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shift
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
 import { assertCanGrantRole, assertCanManagePeople } from '@/lib/security/roles';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
+import { inferEpicName, parseExcelWorkload } from '@/lib/integrations/excel-workload';
 
 type LocalState = {
   workspace: typeof seedWorkspace;
@@ -41,6 +42,15 @@ function touch(assignment: Assignment): Assignment {
     version: assignment.version + 1,
     updatedAt: new Date().toISOString()
   };
+}
+
+function importKey(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function roleTeamAndMembers(state: LocalState, teamId: string, userId: string): { team: Team; members: TeamMember[]; role: UserRole } {
@@ -684,5 +694,125 @@ export class LocalStore implements DataStore {
     }
 
     return { addedTasks, addedEpics };
+  }
+
+  async importFromExcel(params: {
+    teamId: string;
+    userId: string;
+    fileName: string;
+    data: ArrayBuffer;
+  }): Promise<{ addedTasks: number; addedAssignments: number; skippedRows: number; skippedEmployees: string[] }> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    if (role === 'employee') {
+      throw new Error('Import z Excela jest dostępny tylko dla PM/admin.');
+    }
+    assertCanEditTeam(role, team.editMode);
+
+    const employees = this.state.employees.filter((employee) => employee.teamId === params.teamId && employee.active);
+    const entries = parseExcelWorkload(params.data, employees.map((employee) => employee.name));
+    const employeeByImportName = new Map(employees.map((employee) => [importKey(employee.name).split(' ')[0], employee]));
+    const epicByName = new Map(
+      this.state.epics
+        .filter((epic) => epic.workspaceId === team.workspaceId)
+        .map((epic) => [importKey(epic.name), epic])
+    );
+    const taskByTitle = new Map(
+      this.state.tasks
+        .filter((task) => task.workspaceId === team.workspaceId)
+        .map((task) => [importKey(task.title), task])
+    );
+    const existingAssignments = new Set(
+      this.state.assignments
+        .filter((assignment) => assignment.teamId === params.teamId)
+        .map((assignment) => {
+          const task = this.state.tasks.find((item) => item.id === assignment.taskId);
+          return `${assignment.employeeId}|${assignment.startDate}|${importKey(task?.title ?? '')}`;
+        })
+    );
+    const nextStartByEmployeeDate = new Map<string, number>();
+    for (const assignment of this.state.assignments.filter((item) => item.teamId === params.teamId)) {
+      const key = `${assignment.employeeId}|${assignment.startDate}`;
+      nextStartByEmployeeDate.set(
+        key,
+        Math.max(nextStartByEmployeeDate.get(key) ?? DAY_START_HOUR, assignment.startHour + assignment.durationHours)
+      );
+    }
+
+    let addedTasks = 0;
+    let addedAssignments = 0;
+    let skippedRows = 0;
+    const skippedEmployees = new Set<string>();
+
+    for (const entry of entries) {
+      const employee = employeeByImportName.get(importKey(entry.employeeName).split(' ')[0]);
+      if (!employee) {
+        skippedEmployees.add(entry.employeeName);
+        skippedRows += 1;
+        continue;
+      }
+
+      const duplicateKey = `${employee.id}|${entry.date}|${importKey(entry.title)}`;
+      if (existingAssignments.has(duplicateKey)) {
+        skippedRows += 1;
+        continue;
+      }
+
+      const epicName = inferEpicName(entry.title);
+      let epic = epicByName.get(importKey(epicName));
+      if (!epic) {
+        epic = {
+          id: `epic-${randomUUID()}`,
+          workspaceId: team.workspaceId,
+          name: epicName,
+          color: '#4A7FF8'
+        };
+        this.state.epics.push(epic);
+        epicByName.set(importKey(epic.name), epic);
+      }
+
+      let task = taskByTitle.get(importKey(entry.title));
+      if (!task) {
+        task = {
+          id: `task-${randomUUID()}`,
+          workspaceId: team.workspaceId,
+          source: 'manual',
+          title: entry.title,
+          epicId: epic.id,
+          status: 'todo'
+        };
+        this.state.tasks.push(task);
+        taskByTitle.set(importKey(task.title), task);
+        addedTasks += 1;
+      }
+
+      const startKey = `${employee.id}|${entry.date}`;
+      const startHour = nextStartByEmployeeDate.get(startKey) ?? DAY_START_HOUR;
+      if (startHour >= DAY_END_HOUR) {
+        skippedRows += 1;
+        continue;
+      }
+      const durationHours = clamp(entry.durationHours, 1, DAY_END_HOUR - startHour);
+      const now = new Date().toISOString();
+      this.state.assignments.push({
+        id: `assignment-${randomUUID()}`,
+        workspaceId: team.workspaceId,
+        teamId: params.teamId,
+        taskId: task.id,
+        employeeId: employee.id,
+        startDate: entry.date,
+        startHour,
+        desiredStartHour: startHour,
+        durationHours,
+        durationDays: 1,
+        version: 1,
+        updatedAt: now
+      });
+      existingAssignments.add(duplicateKey);
+      nextStartByEmployeeDate.set(startKey, startHour + durationHours);
+      addedAssignments += 1;
+    }
+
+    applyStickyForTeam(this.state, params.teamId);
+    return { addedTasks, addedAssignments, skippedRows, skippedEmployees: Array.from(skippedEmployees) };
   }
 }

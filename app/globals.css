@@ -809,6 +809,12 @@ h2 {
   font-size: 13px;
 }
 
+.settings-muted {
+  color: var(--ter);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .settings-label {
   color: var(--ter);
   font-size: 11px;

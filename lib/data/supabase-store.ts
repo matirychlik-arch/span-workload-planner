@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
+import { inferEpicName, parseExcelWorkload } from '@/lib/integrations/excel-workload';
 import { resolveSticky } from '@/lib/domain/sticky';
 import { Assignment, AppUser, DataStore, Employee, Epic, PlannerSnapshot, Task, Team, TeamEditMode, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
@@ -226,6 +227,15 @@ function touch(assignment: Assignment): Assignment {
     version: assignment.version + 1,
     updatedAt: new Date().toISOString()
   };
+}
+
+function importKey(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function assignmentChanged(previous: Assignment, next: Assignment): boolean {
@@ -1401,5 +1411,150 @@ export class SupabaseStore implements DataStore {
     }
 
     return { addedTasks, addedEpics };
+  }
+
+  async importFromExcel(params: {
+    teamId: string;
+    userId: string;
+    fileName: string;
+    data: ArrayBuffer;
+  }): Promise<{ addedTasks: number; addedAssignments: number; skippedRows: number; skippedEmployees: string[] }> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    if (role === 'employee') {
+      throw new Error('Import z Excela jest dostepny tylko dla PM/admin.');
+    }
+    assertCanEditTeam(role, team.editMode);
+
+    const [employeesResult, epicsResult, tasksResult] = await Promise.all([
+      this.client
+        .from('employees')
+        .select('id, workspace_id, team_id, user_id, name, active, tint_color')
+        .eq('team_id', params.teamId)
+        .eq('active', true),
+      this.client
+        .from('epics')
+        .select('id, workspace_id, jira_key, name, color')
+        .eq('workspace_id', team.workspaceId),
+      this.client
+        .from('tasks')
+        .select('id, workspace_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
+        .eq('workspace_id', team.workspaceId)
+    ]);
+    if (employeesResult.error) throw new Error(employeesResult.error.message);
+    if (epicsResult.error) throw new Error(epicsResult.error.message);
+    if (tasksResult.error) throw new Error(tasksResult.error.message);
+
+    const employees = (employeesResult.data as EmployeeRow[]).map(toEmployee);
+    const entries = parseExcelWorkload(params.data, employees.map((employee) => employee.name));
+    const employeeByImportName = new Map(employees.map((employee) => [importKey(employee.name).split(' ')[0], employee]));
+    const epicByName = new Map((epicsResult.data as EpicRow[]).map(toEpic).map((epic) => [importKey(epic.name), epic]));
+    const taskByTitle = new Map((tasksResult.data as TaskRow[]).map(toTask).map((task) => [importKey(task.title), task]));
+    const taskTitleById = new Map((tasksResult.data as TaskRow[]).map(toTask).map((task) => [task.id, task.title]));
+
+    const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
+    const existingAssignments = new Set(
+      allAssignments.map((assignment) => {
+        const title = taskTitleById.get(assignment.taskId) ?? '';
+        return `${assignment.employeeId}|${assignment.startDate}|${importKey(title)}`;
+      })
+    );
+    const nextStartByEmployeeDate = new Map<string, number>();
+    for (const assignment of allAssignments) {
+      const key = `${assignment.employeeId}|${assignment.startDate}`;
+      nextStartByEmployeeDate.set(
+        key,
+        Math.max(nextStartByEmployeeDate.get(key) ?? DAY_START_HOUR, assignment.startHour + assignment.durationHours)
+      );
+    }
+
+    let addedTasks = 0;
+    let addedAssignments = 0;
+    let skippedRows = 0;
+    const skippedEmployees = new Set<string>();
+    const newAssignments: Assignment[] = [];
+
+    for (const entry of entries) {
+      const employee = employeeByImportName.get(importKey(entry.employeeName).split(' ')[0]);
+      if (!employee) {
+        skippedEmployees.add(entry.employeeName);
+        skippedRows += 1;
+        continue;
+      }
+
+      const duplicateKey = `${employee.id}|${entry.date}|${importKey(entry.title)}`;
+      if (existingAssignments.has(duplicateKey)) {
+        skippedRows += 1;
+        continue;
+      }
+
+      const epicName = inferEpicName(entry.title);
+      let epic = epicByName.get(importKey(epicName));
+      if (!epic) {
+        const newEpic: EpicRow = {
+          id: randomUUID(),
+          workspace_id: team.workspaceId,
+          jira_key: null,
+          name: epicName,
+          color: '#4A7FF8'
+        };
+        const { error: epicError } = await this.client.from('epics').insert(newEpic);
+        if (epicError) throw new Error(epicError.message);
+        epic = toEpic(newEpic);
+        epicByName.set(importKey(epic.name), epic);
+      }
+
+      let task = taskByTitle.get(importKey(entry.title));
+      if (!task) {
+        const newTask: TaskRow = {
+          id: randomUUID(),
+          workspace_id: team.workspaceId,
+          source: 'manual',
+          jira_issue_id: null,
+          jira_key: null,
+          title: entry.title,
+          url: null,
+          epic_id: epic.id,
+          status: 'todo',
+          assignee_id: null
+        };
+        const { error: taskError } = await this.client.from('tasks').insert(newTask);
+        if (taskError) throw new Error(taskError.message);
+        task = toTask(newTask);
+        taskByTitle.set(importKey(task.title), task);
+        taskTitleById.set(task.id, task.title);
+        addedTasks += 1;
+      }
+
+      const startKey = `${employee.id}|${entry.date}`;
+      const startHour = nextStartByEmployeeDate.get(startKey) ?? DAY_START_HOUR;
+      if (startHour >= DAY_END_HOUR) {
+        skippedRows += 1;
+        continue;
+      }
+      const durationHours = clamp(entry.durationHours, 1, DAY_END_HOUR - startHour);
+      const now = new Date().toISOString();
+      newAssignments.push({
+        id: randomUUID(),
+        workspaceId: team.workspaceId,
+        teamId: params.teamId,
+        taskId: task.id,
+        employeeId: employee.id,
+        startDate: entry.date,
+        startHour,
+        desiredStartHour: startHour,
+        durationHours,
+        durationDays: 1,
+        version: 1,
+        updatedAt: now
+      });
+      existingAssignments.add(duplicateKey);
+      nextStartByEmployeeDate.set(startKey, startHour + durationHours);
+      addedAssignments += 1;
+    }
+
+    const resolved = resolveSticky([...allAssignments, ...newAssignments]);
+    await this.persistResolvedAssignments(allAssignments, resolved);
+    return { addedTasks, addedAssignments, skippedRows, skippedEmployees: Array.from(skippedEmployees) };
   }
 }
