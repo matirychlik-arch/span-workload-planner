@@ -4,7 +4,7 @@ import { resolveSticky } from '@/lib/domain/sticky';
 import { Assignment, DataStore, PlannerSnapshot, Team, TeamEditMode, TeamMember, UserRole } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
-import { assertCanGrantRole, assertCanManagePeople } from '@/lib/security/roles';
+import { assertCanGrantRole, assertCanManagePeople, isOwnerEmail } from '@/lib/security/roles';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
 
 type LocalState = {
@@ -301,12 +301,14 @@ export class LocalStore implements DataStore {
   }
 
   async createTeam(params: {
-    teamId: string;
+    teamId?: string;
     userId: string;
     name: string;
     editMode: TeamEditMode;
   }): Promise<PlannerSnapshot> {
-    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    const context = params.teamId ? roleTeamAndMembers(this.state, params.teamId, params.userId) : null;
+    const role: UserRole = context?.role ?? (isOwnerEmail(userEmail(this.state, params.userId)) ? 'admin' : 'employee');
+    const workspaceId = context?.team.workspaceId ?? this.state.workspace.id;
     assertCanManagePeople(role);
     const name = params.name.trim();
     if (!name) throw new Error('Wpisz nazwę teamu.');
@@ -314,7 +316,7 @@ export class LocalStore implements DataStore {
     const newTeamId = `team-${randomUUID()}`;
     this.state.teams.push({
       id: newTeamId,
-      workspaceId: team.workspaceId,
+      workspaceId,
       name,
       pmUserId: params.userId,
       editMode: params.editMode
@@ -328,17 +330,12 @@ export class LocalStore implements DataStore {
     return snapshotForTeam(this.state, newTeamId, params.userId);
   }
 
-  async deleteTeam(params: { teamId: string; userId: string }): Promise<{ nextTeamId: string }> {
+  async deleteTeam(params: { teamId: string; userId: string }): Promise<{ nextTeamId: string | null }> {
     const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
     assertCanManagePeople(role);
 
     const workspaceTeams = this.state.teams.filter((item) => item.workspaceId === team.workspaceId);
-    if (workspaceTeams.length <= 1) {
-      throw new Error('Nie możesz usunąć ostatniego teamu w workspace.');
-    }
-
     const nextTeam = workspaceTeams.find((item) => item.id !== params.teamId);
-    if (!nextTeam) throw new Error('Nie znaleziono teamu do przełączenia.');
 
     const employeeIds = new Set(
       this.state.employees.filter((employee) => employee.teamId === params.teamId).map((employee) => employee.id)
@@ -356,7 +353,7 @@ export class LocalStore implements DataStore {
         : task
     );
 
-    return { nextTeamId: nextTeam.id };
+    return { nextTeamId: nextTeam?.id ?? null };
   }
 
   async createEmployee(params: {
@@ -555,6 +552,41 @@ export class LocalStore implements DataStore {
 
     this.state.tasks = this.state.tasks.map((task) =>
       task.workspaceId === team.workspaceId && taskIds.has(task.id) ? { ...task, epicId: params.epicId } : task
+    );
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  async updateTask(params: {
+    teamId: string;
+    userId: string;
+    assignmentId: string;
+    title: string;
+    description?: string;
+    epicId: string;
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+    assertEmployeeOwnScope(this.state, params.teamId, params.userId, role, [params.assignmentId]);
+
+    const assignment = this.state.assignments.find((item) => item.id === params.assignmentId && item.teamId === params.teamId);
+    if (!assignment) throw new Error('Nie znaleziono assignmentu.');
+
+    const epic = this.state.epics.find((item) => item.id === params.epicId && item.workspaceId === team.workspaceId);
+    if (!epic) throw new Error('Nie znaleziono epica.');
+
+    const title = params.title.trim();
+    if (!title) throw new Error('Wpisz nazwę taska.');
+
+    this.state.tasks = this.state.tasks.map((task) =>
+      task.id === assignment.taskId && task.workspaceId === team.workspaceId
+        ? {
+            ...task,
+            title,
+            status: params.description?.trim() || undefined,
+            epicId: params.epicId
+          }
+        : task
     );
 
     return snapshotForTeam(this.state, params.teamId, params.userId);

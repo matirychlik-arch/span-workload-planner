@@ -5,9 +5,7 @@ import { useRouter } from 'next/navigation';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 
 const demoUsers = [
-  { id: 'u-admin', label: 'Admin SPAN' },
-  { id: 'u-marcin', label: 'Marcin (employee)' },
-  { id: 'u-mateusz', label: 'Mateusz (employee)' }
+  { id: 'u-admin', label: 'Admin SPAN' }
 ];
 const enableDemoAuth = process.env.NEXT_PUBLIC_ENABLE_DEMO_AUTH === 'true';
 

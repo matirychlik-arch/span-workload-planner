@@ -6,8 +6,6 @@ import { Assignment, AppUser, DataStore, Employee, Epic, PlannerSnapshot, Task, 
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
 import {
-  CREATIVE_EMPLOYEES,
-  CREATIVE_TEAM_NAME,
   MATEUSZ_WORK_EMAIL,
   OWNER_EMAIL,
   assertCanGrantRole,
@@ -16,7 +14,7 @@ import {
   normalizeEmail
 } from '@/lib/security/roles';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
-import { seedAssignments, seedEpics, seedTasks, seedWorkspace } from '@/lib/data/mock-seed';
+import { seedEpics, seedWorkspace } from '@/lib/data/mock-seed';
 
 type WorkspaceRow = {
   id: string;
@@ -305,72 +303,11 @@ export class SupabaseStore implements DataStore {
     return data?.workspace_id ? String(data.workspace_id) : null;
   }
 
-  private async ensureCreativeTeam(workspaceId: string, pmUserId: string): Promise<string> {
-    const { data: teams, error: teamListError } = await this.client
-      .from('teams')
-      .select('id, name')
-      .eq('workspace_id', workspaceId);
-    if (teamListError) throw new Error(teamListError.message);
-
-    const existingTeams = (teams ?? []) as Array<{ id: string; name: string }>;
-    const existingCreative = existingTeams.find((team) => team.name === CREATIVE_TEAM_NAME);
-    const reusableTeam = existingCreative ?? existingTeams[0];
-
-    if (reusableTeam) {
-      return reusableTeam.id;
-    }
-
-    const teamId = randomUUID();
-    const teamRow: TeamRow = {
-      id: teamId,
-      workspace_id: workspaceId,
-      name: CREATIVE_TEAM_NAME,
-      pm_user_id: pmUserId,
-      edit_mode: 'collaborative'
-    };
-    const { error } = await this.client.from('teams').insert(teamRow);
-    if (error) throw new Error(error.message);
-    return teamId;
-  }
-
-  private async ensureCreativeEmployees(workspaceId: string, teamId: string): Promise<void> {
-    const { data: employees, error } = await this.client
-      .from('employees')
-      .select('id, name')
-      .eq('team_id', teamId);
-    if (error) throw new Error(error.message);
-
-    const existing = (employees ?? []) as Array<{ id: string; name: string }>;
-    if (existing.length) return;
-
-    for (const employee of CREATIVE_EMPLOYEES) {
-      const { error: insertError } = await this.client.from('employees').insert({
-        id: randomUUID(),
-        workspace_id: workspaceId,
-        team_id: teamId,
-        user_id: null,
-        name: employee.name,
-        active: true,
-        tint_color: employee.tintColor
-      });
-      if (insertError) throw new Error(insertError.message);
-    }
-  }
-
   private async detachUserFromWorkspaceEmployees(workspaceId: string, userId: string): Promise<void> {
     const { error } = await this.client
       .from('employees')
       .update({ user_id: null })
       .eq('workspace_id', workspaceId)
-      .eq('user_id', userId);
-    if (error) throw new Error(error.message);
-  }
-
-  private async detachUserFromTeamEmployees(teamId: string, userId: string): Promise<void> {
-    const { error } = await this.client
-      .from('employees')
-      .update({ user_id: null })
-      .eq('team_id', teamId)
       .eq('user_id', userId);
     if (error) throw new Error(error.message);
   }
@@ -407,15 +344,6 @@ export class SupabaseStore implements DataStore {
     const workspaceId = await this.ownerWorkspaceId();
     if (!workspaceId) return false;
 
-    const { data: ownerUser, error: ownerError } = await this.client
-      .from('app_users')
-      .select('id')
-      .eq('email', OWNER_EMAIL)
-      .maybeSingle();
-    if (ownerError) throw new Error(ownerError.message);
-    const ownerUserId = ownerUser?.id ? String(ownerUser.id) : userId;
-    const teamId = await this.ensureCreativeTeam(workspaceId, ownerUserId);
-
     const userRow: AppUserRow = {
       id: userId,
       workspace_id: workspaceId,
@@ -427,25 +355,27 @@ export class SupabaseStore implements DataStore {
     const { error: userError } = await this.client.from('app_users').upsert(userRow, { onConflict: 'id' });
     if (userError) throw new Error(userError.message);
 
-    await this.ensureMember(teamId, userId, 'employee');
-
-    const { data: mateuszEmployee, error: employeeError } = await this.client
-      .from('employees')
-      .select('id')
-      .eq('team_id', teamId)
-      .ilike('name', '%Mateusz%')
-      .limit(1)
-      .maybeSingle();
-    if (employeeError) throw new Error(employeeError.message);
-    if (mateuszEmployee?.id) {
-      const { error: attachError } = await this.client
-        .from('employees')
-        .update({ user_id: userId })
-        .eq('id', mateuszEmployee.id);
-      if (attachError) throw new Error(attachError.message);
-    }
-
     return true;
+  }
+
+  private async ensureDefaultEpic(workspaceId: string): Promise<void> {
+    const { data: epics, error } = await this.client
+      .from('epics')
+      .select('id')
+      .eq('workspace_id', workspaceId)
+      .limit(1);
+    if (error) throw new Error(error.message);
+    if (epics?.length) return;
+
+    const fallbackEpic = seedEpics[0] ?? { name: 'Manual', color: '#4A7FF8' };
+    const { error: insertError } = await this.client.from('epics').insert({
+      id: randomUUID(),
+      workspace_id: workspaceId,
+      jira_key: null,
+      name: fallbackEpic.name,
+      color: fallbackEpic.color
+    });
+    if (insertError) throw new Error(insertError.message);
   }
 
   private async ensureUserWorkspaceAndSeed(userId: string): Promise<void> {
@@ -460,9 +390,8 @@ export class SupabaseStore implements DataStore {
     if (userError) throw new Error(userError.message);
     if (existingUser) {
       if (isOwnerEmail(profile.email)) {
-        const teamId = await this.ensureCreativeTeam(String(existingUser.workspace_id), userId);
         await this.detachUserFromWorkspaceEmployees(String(existingUser.workspace_id), userId);
-        await this.ensureMember(teamId, userId, 'admin');
+        await this.ensureDefaultEpic(String(existingUser.workspace_id));
       } else {
         await this.attachMateuszWorkUser(userId, profile);
       }
@@ -472,12 +401,10 @@ export class SupabaseStore implements DataStore {
     if (await this.attachMateuszWorkUser(userId, profile)) return;
 
     const workspaceId = randomUUID();
-    const teamId = randomUUID();
-    const now = new Date().toISOString();
 
     const workspaceInsert: WorkspaceRow = {
       id: workspaceId,
-      name: `${seedWorkspace.name} ${profile.email}`.trim(),
+      name: isOwnerEmail(profile.email) ? seedWorkspace.name : `${seedWorkspace.name} ${profile.email}`.trim(),
       google_auth_enabled: true,
       jira_connected: false,
       slack_connected: false
@@ -495,98 +422,7 @@ export class SupabaseStore implements DataStore {
     };
     const { error: appUserError } = await this.client.from('app_users').insert(userRow);
     if (appUserError) throw new Error(appUserError.message);
-
-    const teamRow: TeamRow = {
-      id: teamId,
-      workspace_id: workspaceId,
-      name: CREATIVE_TEAM_NAME,
-      pm_user_id: userId,
-      edit_mode: 'collaborative'
-    };
-    const { error: teamError } = await this.client.from('teams').insert(teamRow);
-    if (teamError) throw new Error(teamError.message);
-
-    const { error: memberError } = await this.client.from('team_members').insert({
-      team_id: teamId,
-      user_id: userId,
-      role: 'admin'
-    });
-    if (memberError) throw new Error(memberError.message);
-
-    const employeeRows: EmployeeRow[] = CREATIVE_EMPLOYEES.map((employee) => ({
-      id: randomUUID(),
-      workspace_id: workspaceId,
-      team_id: teamId,
-      user_id: null,
-      name: employee.name,
-      active: true,
-      tint_color: employee.tintColor
-    }));
-    const { data: insertedEmployees, error: employeeError } = await this.client
-      .from('employees')
-      .insert(employeeRows)
-      .select('*');
-    if (employeeError) throw new Error(employeeError.message);
-    const employees = (insertedEmployees ?? []) as EmployeeRow[];
-
-    const epicMap = new Map<string, string>();
-    const epicRows: EpicRow[] = seedEpics.map((epic) => ({
-      id: randomUUID(),
-      workspace_id: workspaceId,
-      jira_key: epic.jiraKey ?? null,
-      name: epic.name,
-      color: epic.color
-    }));
-    const { data: insertedEpics, error: epicError } = await this.client.from('epics').insert(epicRows).select('*');
-    if (epicError) throw new Error(epicError.message);
-    (insertedEpics as EpicRow[]).forEach((epic) => {
-      const found = seedEpics.find((item) => item.name === epic.name);
-      if (found) epicMap.set(found.id, epic.id);
-    });
-
-    const taskMap = new Map<string, string>();
-    const taskRows: TaskRow[] = seedTasks.map((task) => ({
-      id: randomUUID(),
-      workspace_id: workspaceId,
-      source: task.source,
-      jira_issue_id: task.jiraIssueId ?? null,
-      jira_key: task.jiraKey ?? null,
-      title: task.title,
-      url: task.url ?? null,
-      epic_id: epicMap.get(task.epicId) ?? Array.from(epicMap.values())[0],
-      status: task.status ?? null,
-      assignee_id: null
-    }));
-    const { data: insertedTasks, error: taskError } = await this.client.from('tasks').insert(taskRows).select('*');
-    if (taskError) throw new Error(taskError.message);
-    (insertedTasks as TaskRow[]).forEach((task) => {
-      const found = seedTasks.find((item) => item.title === task.title);
-      if (found) taskMap.set(found.id, task.id);
-    });
-
-    const marcinEmployee = employees.find((employee) => employee.name.toLowerCase().includes('marcin')) ?? employees[0];
-    const mateuszEmployee = employees.find((employee) => employee.name.toLowerCase().includes('mateusz')) ?? employees[0];
-    const assignmentRows: AssignmentRow[] = seedAssignments.map((assignment) => ({
-      id: randomUUID(),
-      workspace_id: workspaceId,
-      team_id: teamId,
-      task_id: taskMap.get(assignment.taskId) ?? Array.from(taskMap.values())[0],
-      employee_id: assignment.employeeId.includes('marcin') ? marcinEmployee.id : mateuszEmployee.id,
-      start_date: assignment.startDate,
-      start_hour: assignment.startHour,
-      desired_start_hour: assignment.desiredStartHour,
-      duration_hours: assignment.durationHours,
-      duration_days: assignment.durationDays,
-      completion_ratio: assignment.completionRatio ?? null,
-      version: 1,
-      updated_at: now
-    }));
-    const { error: assignmentError } = await this.client.from('assignments').insert(assignmentRows);
-    if (assignmentError) throw new Error(assignmentError.message);
-
-    if (isOwnerEmail(profile.email)) {
-      await this.detachUserFromTeamEmployees(teamId, userId);
-    }
+    await this.ensureDefaultEpic(workspaceId);
   }
 
   private async teamContext(teamId: string, userId: string): Promise<TeamContext> {
@@ -920,13 +756,31 @@ export class SupabaseStore implements DataStore {
   }
 
   async createTeam(params: {
-    teamId: string;
+    teamId?: string;
     userId: string;
     name: string;
     editMode: TeamEditMode;
   }): Promise<PlannerSnapshot> {
     await this.ensureUserWorkspaceAndSeed(params.userId);
-    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    let workspaceId: string;
+    let role: UserRole;
+
+    if (params.teamId) {
+      const context = await this.teamContext(params.teamId, params.userId);
+      workspaceId = context.team.workspaceId;
+      role = context.role;
+    } else {
+      const { data: user, error: userError } = await this.client
+        .from('app_users')
+        .select('workspace_id, email')
+        .eq('id', params.userId)
+        .maybeSingle();
+      if (userError) throw new Error(userError.message);
+      if (!user) throw new Error('Nie znaleziono użytkownika.');
+      workspaceId = String(user.workspace_id);
+      role = isOwnerEmail(String(user.email)) ? 'admin' : 'employee';
+    }
+
     assertCanManagePeople(role);
 
     const name = params.name.trim();
@@ -934,7 +788,7 @@ export class SupabaseStore implements DataStore {
 
     const newTeam: TeamRow = {
       id: randomUUID(),
-      workspace_id: team.workspaceId,
+      workspace_id: workspaceId,
       name,
       pm_user_id: params.userId,
       edit_mode: params.editMode
@@ -953,7 +807,7 @@ export class SupabaseStore implements DataStore {
     return this.snapshot(newTeam.id, params.userId);
   }
 
-  async deleteTeam(params: { teamId: string; userId: string }): Promise<{ nextTeamId: string }> {
+  async deleteTeam(params: { teamId: string; userId: string }): Promise<{ nextTeamId: string | null }> {
     await this.ensureUserWorkspaceAndSeed(params.userId);
     const { team, role } = await this.teamContext(params.teamId, params.userId);
     assertCanManagePeople(role);
@@ -965,12 +819,7 @@ export class SupabaseStore implements DataStore {
     if (teamsError) throw new Error(teamsError.message);
 
     const workspaceTeams = (teams ?? []).map((item) => String(item.id));
-    if (workspaceTeams.length <= 1) {
-      throw new Error('Nie możesz usunąć ostatniego teamu w workspace.');
-    }
-
-    const nextTeamId = workspaceTeams.find((id) => id !== params.teamId);
-    if (!nextTeamId) throw new Error('Nie znaleziono teamu do przełączenia.');
+    const nextTeamId = workspaceTeams.find((id) => id !== params.teamId) ?? null;
 
     const { error: deleteError } = await this.client
       .from('teams')
@@ -1270,6 +1119,54 @@ export class SupabaseStore implements DataStore {
       .update({ epic_id: params.epicId })
       .eq('workspace_id', team.workspaceId)
       .in('id', taskIds);
+    if (updateError) throw new Error(updateError.message);
+
+    return this.snapshot(params.teamId, params.userId);
+  }
+
+  async updateTask(params: {
+    teamId: string;
+    userId: string;
+    assignmentId: string;
+    title: string;
+    description?: string;
+    epicId: string;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+    await this.assertEmployeeOwnScope(params.teamId, params.userId, role, [params.assignmentId]);
+
+    const title = params.title.trim();
+    if (!title) throw new Error('Wpisz nazwę taska.');
+
+    const { data: assignment, error: assignmentError } = await this.client
+      .from('assignments')
+      .select('id, task_id')
+      .eq('team_id', params.teamId)
+      .eq('id', params.assignmentId)
+      .maybeSingle();
+    if (assignmentError) throw new Error(assignmentError.message);
+    if (!assignment) throw new Error('Nie znaleziono assignmentu.');
+
+    const { data: epic, error: epicError } = await this.client
+      .from('epics')
+      .select('id')
+      .eq('workspace_id', team.workspaceId)
+      .eq('id', params.epicId)
+      .maybeSingle();
+    if (epicError) throw new Error(epicError.message);
+    if (!epic) throw new Error('Nie znaleziono epica.');
+
+    const { error: updateError } = await this.client
+      .from('tasks')
+      .update({
+        title,
+        status: params.description?.trim() || null,
+        epic_id: params.epicId
+      })
+      .eq('workspace_id', team.workspaceId)
+      .eq('id', String(assignment.task_id));
     if (updateError) throw new Error(updateError.message);
 
     return this.snapshot(params.teamId, params.userId);

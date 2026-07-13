@@ -138,7 +138,7 @@ export interface DataStore {
     editMode: TeamEditMode;
   }): Promise<PlannerSnapshot>;
   createTeam(params: {
-    teamId: string;
+    teamId?: string;
     userId: string;
     name: string;
     editMode: TeamEditMode;
@@ -146,7 +146,7 @@ export interface DataStore {
   deleteTeam(params: {
     teamId: string;
     userId: string;
-  }): Promise<{ nextTeamId: string }>;
+  }): Promise<{ nextTeamId: string | null }>;
   createEmployee(params: {
     teamId: string;
     userId: string;
@@ -194,6 +194,14 @@ export interface DataStore {
     teamId: string;
     userId: string;
     assignmentIds: string[];
+    epicId: string;
+  }): Promise<PlannerSnapshot>;
+  updateTask(params: {
+    teamId: string;
+    userId: string;
+    assignmentId: string;
+    title: string;
+    description?: string;
     epicId: string;
   }): Promise<PlannerSnapshot>;
   resizeAssignment(params: {

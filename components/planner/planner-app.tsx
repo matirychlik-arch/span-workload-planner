@@ -74,6 +74,13 @@ type SelectionMenuPosition = {
   y: number;
 } | null;
 
+type TaskEditDraft = {
+  assignmentId: string;
+  title: string;
+  description: string;
+  epicId: string;
+};
+
 const HOUR_HEIGHT = 52;
 const DAY_WIDTH = 220;
 const TIMELINE_TOP = 18;
@@ -166,6 +173,7 @@ export function PlannerApp() {
   const [dragContext, setDragContext] = useState<PlannerDragContext | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuPosition>(null);
+  const [taskEditDraft, setTaskEditDraft] = useState<TaskEditDraft | null>(null);
   const [dropPreview, setDropPreview] = useState<DropPreview[]>([]);
   const [dropCellKey, setDropCellKey] = useState<string | null>(null);
   const [resizing, setResizing] = useState<ResizeContext | null>(null);
@@ -276,14 +284,38 @@ export function PlannerApp() {
   }, []);
 
   useEffect(() => {
-    if (!selectedIds.size) setSelectionMenu(null);
+    if (!selectedIds.size) {
+      setSelectionMenu(null);
+      setTaskEditDraft(null);
+    }
   }, [selectedIds]);
+
+  useEffect(() => {
+    if (selectedAssignments.length !== 1) {
+      setTaskEditDraft(null);
+      return;
+    }
+    const assignment = selectedAssignments[0];
+    const task = taskById.get(assignment.taskId);
+    if (!task) return;
+    setTaskEditDraft((current) => {
+      if (current?.assignmentId === assignment.id) return current;
+      return {
+        assignmentId: assignment.id,
+        title: task.title,
+        description: task.status === 'todo' ? '' : task.status ?? '',
+        epicId: task.epicId
+      };
+    });
+  }, [selectedAssignments, taskById]);
 
   const loadTeams = useCallback(async () => {
     const result = await api<TeamOption[]>('/api/teams');
     setTeams(result);
     if (!result.length) {
-      throw new Error('Brak zespołów przypisanych do użytkownika.');
+      setTeamId('');
+      setSnapshot(null);
+      return;
     }
     setTeamId((current) => current || result[0].id);
   }, []);
@@ -758,6 +790,57 @@ export function PlannerApp() {
     [canEdit, queuePlannerCommit, selectedIds, snapshot, teamId, updateSnapshot]
   );
 
+  const handleTaskEditSave = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!teamId || !canEdit || !snapshot || !taskEditDraft) return;
+      const title = taskEditDraft.title.trim();
+      if (!title) {
+        setError('Wpisz nazwę taska.');
+        return;
+      }
+
+      const assignment = snapshot.assignments.find((item) => item.id === taskEditDraft.assignmentId);
+      if (!assignment) return;
+      const previousSnapshot = snapshot;
+
+      try {
+        setError('');
+        updateSnapshot({
+          ...snapshot,
+          tasks: snapshot.tasks.map((task) =>
+            task.id === assignment.taskId
+              ? {
+                  ...task,
+                  title,
+                  status: taskEditDraft.description.trim() || undefined,
+                  epicId: taskEditDraft.epicId
+                }
+              : task
+          )
+        });
+        setSelectionMenu(null);
+
+        const next = await api<PlannerSnapshot>('/api/tasks/update', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            teamId,
+            assignmentId: taskEditDraft.assignmentId,
+            title,
+            description: taskEditDraft.description.trim() || undefined,
+            epicId: taskEditDraft.epicId
+          })
+        });
+        updateSnapshot(next);
+      } catch (err) {
+        updateSnapshot(previousSnapshot);
+        const message = err instanceof Error ? err.message : 'Nie udało się zapisać taska.';
+        setError(message);
+      }
+    },
+    [canEdit, snapshot, taskEditDraft, teamId, updateSnapshot]
+  );
+
   const handleResizeCommit = useCallback(
     async (assignmentId: string, durationHours?: number, durationDays?: number) => {
       if (!teamId || !canEdit) return;
@@ -958,6 +1041,7 @@ export function PlannerApp() {
     [snapshot]
   );
   const canManageSettings = snapshot?.currentRole === 'admin';
+  const canCreateTeams = canManageSettings || teams.length === 0;
   const canGrantAdmins = currentUser?.email?.toLowerCase() === OWNER_EMAIL;
 
   useEffect(() => {
@@ -991,8 +1075,15 @@ export function PlannerApp() {
   const refreshTeams = useCallback(async (nextTeamId?: string) => {
     const result = await api<TeamOption[]>('/api/teams');
     setTeams(result);
-    if (nextTeamId) setTeamId(nextTeamId);
-  }, []);
+    if (nextTeamId) {
+      setTeamId(nextTeamId);
+      return;
+    }
+    if (!result.some((team) => team.id === teamId)) {
+      setTeamId(result[0]?.id ?? '');
+      if (!result.length) setSnapshot(null);
+    }
+  }, [teamId]);
 
   const handleSaveTeamSettings = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -1024,14 +1115,14 @@ export function PlannerApp() {
   const handleCreateTeam = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      if (!teamId || !canManageSettings || !newTeamName.trim()) return;
+      if (!canCreateTeams || !newTeamName.trim()) return;
       try {
         setSettingsSaving(true);
         setError('');
         const next = await api<PlannerSnapshot>('/api/settings/teams/create', {
           method: 'POST',
           body: JSON.stringify({
-            teamId,
+            teamId: teamId || undefined,
             name: newTeamName,
             editMode: 'collaborative'
           })
@@ -1046,34 +1137,30 @@ export function PlannerApp() {
         setSettingsSaving(false);
       }
     },
-    [canManageSettings, newTeamName, refreshTeams, teamId, updateSnapshot]
+    [canCreateTeams, newTeamName, refreshTeams, teamId, updateSnapshot]
   );
 
   const handleDeleteTeam = useCallback(async () => {
     if (!teamId || !canManageSettings || !currentTeam) return;
-    if (teams.length <= 1) {
-      setError('Nie możesz usunąć ostatniego teamu w workspace.');
-      return;
-    }
     const confirmed = window.confirm(`Usunąć team "${currentTeam.name}" razem z jego pracownikami i planem?`);
     if (!confirmed) return;
 
     try {
       setSettingsSaving(true);
       setError('');
-      const result = await api<{ nextTeamId: string }>('/api/settings/teams/delete', {
+      const result = await api<{ nextTeamId: string | null }>('/api/settings/teams/delete', {
         method: 'POST',
         body: JSON.stringify({ teamId })
       });
       setSettingsOpen(false);
-      await refreshTeams(result.nextTeamId);
+      await refreshTeams(result.nextTeamId ?? undefined);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Nie udało się usunąć teamu.';
       setError(message);
     } finally {
       setSettingsSaving(false);
     }
-  }, [canManageSettings, currentTeam, refreshTeams, teamId, teams.length]);
+  }, [canManageSettings, currentTeam, refreshTeams, teamId]);
 
   const handleCreateEmployee = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -1277,34 +1364,48 @@ export function PlannerApp() {
               <span className="brand-claim">Jira mówi, co trzeba zrobić. SPAN pokazuje, kiedy.</span>
             </div>
           </div>
-          <button
-            className="secondary topbar-settings icon-btn"
-            aria-label="Ustawienia"
-            title="Ustawienia"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M9.67 4.14a2.34 2.34 0 0 1 4.66 0 2.34 2.34 0 0 0 3.32 1.91 2.34 2.34 0 0 1 2.33 4.04 2.34 2.34 0 0 0 0 3.82 2.34 2.34 0 0 1-2.33 4.04 2.34 2.34 0 0 0-3.32 1.91 2.34 2.34 0 0 1-4.66 0 2.34 2.34 0 0 0-3.32-1.91 2.34 2.34 0 0 1-2.33-4.04 2.34 2.34 0 0 0 0-3.82 2.34 2.34 0 0 1 2.33-4.04 2.34 2.34 0 0 0 3.32-1.91Z" />
-            </svg>
-          </button>
+          <div className="topbar-actions">
+            <button className="secondary company-switcher" type="button" onClick={() => setSettingsOpen(true)}>
+              <span className="company-logo">
+                <img src="/assets/span-logo.svg" alt="" />
+              </span>
+              <span>{snapshot?.workspace.name ?? 'Firma'}</span>
+            </button>
+            <button
+              className="secondary topbar-settings icon-btn"
+              aria-label="Ustawienia"
+              title="Ustawienia"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M9.67 4.14a2.34 2.34 0 0 1 4.66 0 2.34 2.34 0 0 0 3.32 1.91 2.34 2.34 0 0 1 2.33 4.04 2.34 2.34 0 0 0 0 3.82 2.34 2.34 0 0 1-2.33 4.04 2.34 2.34 0 0 0-3.32 1.91 2.34 2.34 0 0 1-4.66 0 2.34 2.34 0 0 0-3.32-1.91 2.34 2.34 0 0 1-2.33-4.04 2.34 2.34 0 0 0 0-3.82 2.34 2.34 0 0 1 2.33-4.04 2.34 2.34 0 0 0 3.32-1.91Z" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="topbar-controls">
           <div className="controls-left">
-            <select
-              className="team-select"
-              value={teamId}
-              onChange={(event) => {
-                setTeamId(event.target.value);
-                setSelectedIds(new Set());
-              }}
-            >
-              {teams.map((team) => (
-                <option key={team.id} value={team.id}>
-                  {team.name}
-                </option>
-              ))}
-            </select>
+            {teams.length ? (
+              <select
+                className="team-select"
+                value={teamId}
+                onChange={(event) => {
+                  setTeamId(event.target.value);
+                  setSelectedIds(new Set());
+                }}
+              >
+                {teams.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <button className="secondary team-select" type="button" onClick={() => setSettingsOpen(true)}>
+                Brak teamu
+              </button>
+            )}
             <button className="secondary jira-btn" onClick={handleImportJira} disabled={!canImportExternal}>
               Import z Jiry
             </button>
@@ -1334,8 +1435,12 @@ export function PlannerApp() {
             </button>
           </div>
           <div className="controls-right">
-            <span className={`role-badge role-${snapshot?.currentRole}`}>{snapshot?.currentRole}</span>
-            <span className="mode-badge">{currentTeam?.editMode ?? snapshot?.team.editMode}</span>
+            {snapshot && (
+              <>
+                <span className={`role-badge role-${snapshot.currentRole}`}>{snapshot.currentRole}</span>
+                <span className="mode-badge">{currentTeam?.editMode ?? snapshot.team.editMode}</span>
+              </>
+            )}
             <div className="week-switch" aria-label="Przełącznik tygodnia">
               <button className="secondary nav-btn" onClick={() => moveWeek(-1)} aria-label="Poprzedni tydzień">
                 ‹
@@ -1359,42 +1464,121 @@ export function PlannerApp() {
           style={selectionMenu ? ({ left: selectionMenu.x, top: selectionMenu.y } as CSSProperties) : undefined}
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="selection-menu-head">
-            <div>
-              <div className="selection-count mono">
-                {blocksLabel(selectedAssignments.length)}
-              </div>
-              <strong>Zmień epic / kolor</strong>
-            </div>
-            <button
-              className="selection-clear"
-              type="button"
-              aria-label="Wyczyść zaznaczenie"
-              onClick={() => setSelectedIds(new Set())}
-            >
-              ×
-            </button>
-          </div>
-          <div className="selection-epics">
-            {snapshot.epics.map((epic) => {
-              const isActive = selectedEpicIds.size === 1 && selectedEpicIds.has(epic.id);
-              return (
+          {taskEditDraft && selectedAssignments.length === 1 ? (
+            <form onSubmit={handleTaskEditSave}>
+              <div className="selection-menu-head">
+                <div>
+                  <div className="selection-count mono">1 blok</div>
+                  <strong>Edytuj task</strong>
+                </div>
                 <button
-                  key={epic.id}
+                  className="selection-clear"
                   type="button"
-                  className={`epic-choice ${isActive ? 'active' : ''}`}
-                  style={{ '--epic-color': epic.color } as CSSProperties}
-                  onClick={() => handleAssignmentEpicChange(epic.id)}
+                  aria-label="Wyczyść zaznaczenie"
+                  onClick={() => setSelectedIds(new Set())}
                 >
-                  <span className="epic-choice-dot" />
-                  <span>{epic.name}</span>
+                  ×
                 </button>
-              );
-            })}
-          </div>
+              </div>
+              <div className="task-edit-fields">
+                <input
+                  value={taskEditDraft.title}
+                  onChange={(event) => setTaskEditDraft((current) => (current ? { ...current, title: event.target.value } : current))}
+                  placeholder="Nazwa taska"
+                />
+                <textarea
+                  value={taskEditDraft.description}
+                  onChange={(event) =>
+                    setTaskEditDraft((current) => (current ? { ...current, description: event.target.value } : current))
+                  }
+                  placeholder="Opis pod kafelkiem"
+                  rows={3}
+                />
+              </div>
+              <div className="selection-subtitle mono">Epic / kolor</div>
+              <div className="selection-epics">
+                {snapshot.epics.map((epic) => {
+                  const isActive = taskEditDraft.epicId === epic.id;
+                  return (
+                    <button
+                      key={epic.id}
+                      type="button"
+                      className={`epic-choice ${isActive ? 'active' : ''}`}
+                      style={{ '--epic-color': epic.color } as CSSProperties}
+                      onClick={() => setTaskEditDraft((current) => (current ? { ...current, epicId: epic.id } : current))}
+                    >
+                      <span className="epic-choice-dot" />
+                      <span>{epic.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="task-edit-actions">
+                <button type="submit" disabled={!taskEditDraft.title.trim() || !taskEditDraft.epicId}>
+                  Zapisz
+                </button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <div className="selection-menu-head">
+                <div>
+                  <div className="selection-count mono">
+                    {blocksLabel(selectedAssignments.length)}
+                  </div>
+                  <strong>Zmień epic / kolor</strong>
+                </div>
+                <button
+                  className="selection-clear"
+                  type="button"
+                  aria-label="Wyczyść zaznaczenie"
+                  onClick={() => setSelectedIds(new Set())}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="selection-epics">
+                {snapshot.epics.map((epic) => {
+                  const isActive = selectedEpicIds.size === 1 && selectedEpicIds.has(epic.id);
+                  return (
+                    <button
+                      key={epic.id}
+                      type="button"
+                      className={`epic-choice ${isActive ? 'active' : ''}`}
+                      style={{ '--epic-color': epic.color } as CSSProperties}
+                      onClick={() => handleAssignmentEpicChange(epic.id)}
+                    >
+                      <span className="epic-choice-dot" />
+                      <span>{epic.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       )}
 
+      {!teamId || !snapshot ? (
+        <main className="empty-workspace">
+          <section className="empty-panel">
+            <div className="mono">Czysta karta</div>
+            <h1>Utwórz pierwszy team</h1>
+            <p>Workspace jest pusty. Dodaj zespół, a potem pracowników, epiki i taski.</p>
+            <form className="empty-create-form" onSubmit={handleCreateTeam}>
+              <input
+                value={newTeamName}
+                onChange={(event) => setNewTeamName(event.target.value)}
+                placeholder="Nazwa teamu"
+                disabled={settingsSaving}
+              />
+              <button type="submit" disabled={settingsSaving || !newTeamName.trim()}>
+                Utwórz team
+              </button>
+            </form>
+          </section>
+        </main>
+      ) : (
       <main className={`main-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
         <aside className={`backlog-side ${sidebarCollapsed ? 'is-collapsed' : ''}`} data-onboarding="backlog">
           {sidebarCollapsed ? (
@@ -1468,6 +1652,7 @@ export function PlannerApp() {
                 {backlogTasks.map((task) => {
                   const epic = epicById.get(task.epicId);
                   const taskReady = !isOptimisticId(task.id);
+                  const taskDescription = task.status && task.status !== 'todo' ? task.status : '';
                   return (
                     <div
                       key={task.id}
@@ -1491,7 +1676,7 @@ export function PlannerApp() {
                       <span className="task-dot" />
                       <div className="task-title">{task.title}</div>
                       <div className="task-meta">
-                        {taskReady ? `${(task.jiraKey ?? task.id).toUpperCase()} · 1h · ${epic?.name ?? 'epic'}` : 'zapisywanie...'}
+                        {taskReady ? taskDescription || `${(task.jiraKey ?? task.id).toUpperCase()} · 1h · ${epic?.name ?? 'epic'}` : 'zapisywanie...'}
                       </div>
                     </div>
                   );
@@ -1595,6 +1780,7 @@ export function PlannerApp() {
                           const widthStyle = days > 1 ? `calc(${days * 100}% - 8px)` : undefined;
                           const title = task.title;
                           const meta = `${task.jiraKey ?? task.id} · ${pad2(assignment.startHour)}:00-${pad2(assignment.startHour + assignment.durationHours)}:00${days > 1 ? ` · ${days} dni` : ''}`;
+                          const taskDescription = task.status && task.status !== 'todo' ? task.status : '';
 
                           return (
                             <div
@@ -1662,7 +1848,7 @@ export function PlannerApp() {
                                 ×
                               </button>
                               <div className="task-title">{title}</div>
-                              <div className="task-meta">{meta}</div>
+                              <div className="task-meta">{taskDescription || meta}</div>
                               {canEdit && (
                                 <>
                                   <div
@@ -1713,6 +1899,7 @@ export function PlannerApp() {
           </div>
         </section>
       </main>
+      )}
 
       {settingsOpen && (
         <div className="modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>
@@ -1726,12 +1913,27 @@ export function PlannerApp() {
                 ×
               </button>
             </div>
-            {!canManageSettings && (
+            {!canManageSettings && teams.length > 0 && (
               <div className="settings-note">Tylko admin może zmieniać teamy i pracowników.</div>
             )}
             {canManageSettings && !canGrantAdmins && (
               <div className="settings-note">Role admin może nadawać tylko {OWNER_EMAIL}.</div>
             )}
+            <div className="settings-section">
+              <div className="settings-label">Firmy i teamy</div>
+              <div className="company-settings-row">
+                <span className="company-logo">
+                  <img src="/assets/span-logo.svg" alt="" />
+                </span>
+                <div>
+                  <div className="settings-value">{snapshot?.workspace.name ?? 'SPAN'}</div>
+                  <div className="settings-muted">Logo firmy będzie tu podmieniane po wgraniu własnego assetu.</div>
+                </div>
+              </div>
+              <div className="settings-list">
+                {teams.length ? teams.map((team) => <span key={team.id}>{team.name}</span>) : <span>Brak teamów</span>}
+              </div>
+            </div>
             <div className="settings-section settings-form">
               <div className="settings-label">Jira dla obecnego teamu</div>
               <input
@@ -1767,7 +1969,7 @@ export function PlannerApp() {
                 type="button"
                 className="secondary danger-btn"
                 onClick={() => void handleDeleteTeam()}
-                disabled={!canManageSettings || settingsSaving || teams.length <= 1}
+                disabled={!canManageSettings || settingsSaving}
               >
                 Usuń team
               </button>
@@ -1778,10 +1980,10 @@ export function PlannerApp() {
                 <input
                   value={newTeamName}
                   onChange={(event) => setNewTeamName(event.target.value)}
-                  disabled={!canManageSettings || settingsSaving}
+                  disabled={!canCreateTeams || settingsSaving}
                   placeholder="Nazwa nowego teamu"
                 />
-                <button type="submit" disabled={!canManageSettings || settingsSaving || !newTeamName.trim()}>
+                <button type="submit" disabled={!canCreateTeams || settingsSaving || !newTeamName.trim()}>
                   Dodaj
                 </button>
               </div>
