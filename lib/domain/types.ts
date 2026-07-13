@@ -190,6 +190,12 @@ export interface DataStore {
     userId: string;
     assignmentIds: string[];
   }): Promise<PlannerSnapshot>;
+  updateAssignmentsEpic(params: {
+    teamId: string;
+    userId: string;
+    assignmentIds: string[];
+    epicId: string;
+  }): Promise<PlannerSnapshot>;
   resizeAssignment(params: {
     teamId: string;
     userId: string;

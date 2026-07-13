@@ -69,6 +69,11 @@ type DropPreview = {
   color: string;
 };
 
+type SelectionMenuPosition = {
+  x: number;
+  y: number;
+} | null;
+
 const HOUR_HEIGHT = 52;
 const DAY_WIDTH = 220;
 const TIMELINE_TOP = 18;
@@ -146,6 +151,12 @@ function isOptimisticId(id: string): boolean {
   return id.startsWith('optimistic-');
 }
 
+function blocksLabel(count: number): string {
+  if (count === 1) return '1 blok';
+  if (count > 1 && count < 5) return `${count} bloki`;
+  return `${count} bloków`;
+}
+
 export function PlannerApp() {
   const [teams, setTeams] = useState<TeamOption[]>([]);
   const [teamId, setTeamId] = useState<string>('');
@@ -154,6 +165,7 @@ export function PlannerApp() {
   const [error, setError] = useState<string>('');
   const [dragContext, setDragContext] = useState<PlannerDragContext | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenuPosition>(null);
   const [dropPreview, setDropPreview] = useState<DropPreview[]>([]);
   const [dropCellKey, setDropCellKey] = useState<string | null>(null);
   const [resizing, setResizing] = useState<ResizeContext | null>(null);
@@ -224,6 +236,19 @@ export function PlannerApp() {
     });
   }, [snapshot?.assignments, resizeDrafts]);
 
+  const selectedAssignments = useMemo(() => {
+    return assignmentsForRender.filter((assignment) => selectedIds.has(assignment.id));
+  }, [assignmentsForRender, selectedIds]);
+
+  const selectedEpicIds = useMemo(() => {
+    const ids = new Set<string>();
+    selectedAssignments.forEach((assignment) => {
+      const task = taskById.get(assignment.taskId);
+      if (task) ids.add(task.epicId);
+    });
+    return ids;
+  }, [selectedAssignments, taskById]);
+
   useEffect(() => {
     resizeDraftsRef.current = resizeDrafts;
   }, [resizeDrafts]);
@@ -249,6 +274,10 @@ export function PlannerApp() {
       return result;
     });
   }, []);
+
+  useEffect(() => {
+    if (!selectedIds.size) setSelectionMenu(null);
+  }, [selectedIds]);
 
   const loadTeams = useCallback(async () => {
     const result = await api<TeamOption[]>('/api/teams');
@@ -690,6 +719,41 @@ export function PlannerApp() {
         'Błąd podczas usuwania.'
       );
       setSelectedIds(new Set());
+    },
+    [canEdit, queuePlannerCommit, selectedIds, snapshot, teamId, updateSnapshot]
+  );
+
+  const handleAssignmentEpicChange = useCallback(
+    (epicId: string) => {
+      if (!teamId || !canEdit || !snapshot || !selectedIds.size) return;
+      const assignmentIds = Array.from(selectedIds).filter((id) => !isOptimisticId(id));
+      if (!assignmentIds.length) {
+        setError('Ten blok jeszcze się zapisuje. Poczekaj sekundę i spróbuj ponownie.');
+        return;
+      }
+
+      const assignmentSet = new Set(assignmentIds);
+      const taskIds = new Set(
+        snapshot.assignments
+          .filter((assignment) => assignmentSet.has(assignment.id))
+          .map((assignment) => assignment.taskId)
+      );
+      if (!taskIds.size) return;
+
+      updateSnapshot({
+        ...snapshot,
+        tasks: snapshot.tasks.map((task) => (taskIds.has(task.id) ? { ...task, epicId } : task))
+      });
+      setSelectionMenu(null);
+
+      queuePlannerCommit(
+        () =>
+          api<PlannerSnapshot>('/api/tasks/epic', {
+            method: 'POST',
+            body: JSON.stringify({ teamId, assignmentIds, epicId })
+          }),
+        'Błąd podczas zmiany epica.'
+      );
     },
     [canEdit, queuePlannerCommit, selectedIds, snapshot, teamId, updateSnapshot]
   );
@@ -1289,6 +1353,48 @@ export function PlannerApp() {
         {!!error && <div className="error-strip">{error}</div>}
       </header>
 
+      {snapshot && canEdit && selectedAssignments.length > 0 && (
+        <div
+          className={`selection-menu ${selectionMenu ? 'at-pointer' : ''}`}
+          style={selectionMenu ? ({ left: selectionMenu.x, top: selectionMenu.y } as CSSProperties) : undefined}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="selection-menu-head">
+            <div>
+              <div className="selection-count mono">
+                {blocksLabel(selectedAssignments.length)}
+              </div>
+              <strong>Zmień epic / kolor</strong>
+            </div>
+            <button
+              className="selection-clear"
+              type="button"
+              aria-label="Wyczyść zaznaczenie"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              ×
+            </button>
+          </div>
+          <div className="selection-epics">
+            {snapshot.epics.map((epic) => {
+              const isActive = selectedEpicIds.size === 1 && selectedEpicIds.has(epic.id);
+              return (
+                <button
+                  key={epic.id}
+                  type="button"
+                  className={`epic-choice ${isActive ? 'active' : ''}`}
+                  style={{ '--epic-color': epic.color } as CSSProperties}
+                  onClick={() => handleAssignmentEpicChange(epic.id)}
+                >
+                  <span className="epic-choice-dot" />
+                  <span>{epic.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <main className={`main-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
         <aside className={`backlog-side ${sidebarCollapsed ? 'is-collapsed' : ''}`} data-onboarding="backlog">
           {sidebarCollapsed ? (
@@ -1496,8 +1602,21 @@ export function PlannerApp() {
                               data-onboarding="multiselect"
                               className={`task planned ${days > 1 ? 'multi' : ''} ${isSelected ? 'selected' : ''}`}
                               draggable={canEdit}
+                              onContextMenu={(event) => {
+                                if (!canEdit) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                if (!selectedIds.has(assignment.id)) {
+                                  setSelectedIds(new Set([assignment.id]));
+                                }
+                                setSelectionMenu({
+                                  x: Math.max(12, Math.min(event.clientX, window.innerWidth - 300)),
+                                  y: Math.max(12, Math.min(event.clientY, window.innerHeight - 260))
+                                });
+                              }}
                               onDragStart={(event) => {
                                 if (!canEdit) return;
+                                setSelectionMenu(null);
                                 if (!(event.metaKey || event.ctrlKey)) {
                                   if (!selectedIds.has(assignment.id)) {
                                     setSelectedIds(new Set([assignment.id]));
@@ -1513,6 +1632,7 @@ export function PlannerApp() {
                                 clearDropPreview();
                               }}
                               onClick={(event) => {
+                                setSelectionMenu(null);
                                 if (event.metaKey || event.ctrlKey) {
                                   setSelectedIds((prev) => {
                                     const next = new Set(prev);

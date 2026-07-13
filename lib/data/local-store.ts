@@ -532,6 +532,34 @@ export class LocalStore implements DataStore {
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
+  async updateAssignmentsEpic(params: {
+    teamId: string;
+    userId: string;
+    assignmentIds: string[];
+    epicId: string;
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+    assertEmployeeOwnScope(this.state, params.teamId, params.userId, role, params.assignmentIds);
+
+    const epic = this.state.epics.find((item) => item.id === params.epicId && item.workspaceId === team.workspaceId);
+    if (!epic) throw new Error('Nie znaleziono epica.');
+
+    const assignmentIdSet = new Set(params.assignmentIds);
+    const taskIds = new Set(
+      this.state.assignments
+        .filter((assignment) => assignment.teamId === params.teamId && assignmentIdSet.has(assignment.id))
+        .map((assignment) => assignment.taskId)
+    );
+    if (!taskIds.size) throw new Error('Nie znaleziono assignmentów.');
+
+    this.state.tasks = this.state.tasks.map((task) =>
+      task.workspaceId === team.workspaceId && taskIds.has(task.id) ? { ...task, epicId: params.epicId } : task
+    );
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
   async resizeAssignment(params: {
     teamId: string;
     userId: string;

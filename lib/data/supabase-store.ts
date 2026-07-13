@@ -1230,6 +1230,51 @@ export class SupabaseStore implements DataStore {
     return this.snapshot(params.teamId, params.userId);
   }
 
+  async updateAssignmentsEpic(params: {
+    teamId: string;
+    userId: string;
+    assignmentIds: string[];
+    epicId: string;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+    await this.assertEmployeeOwnScope(params.teamId, params.userId, role, params.assignmentIds);
+
+    const { data: epic, error: epicError } = await this.client
+      .from('epics')
+      .select('id')
+      .eq('workspace_id', team.workspaceId)
+      .eq('id', params.epicId)
+      .maybeSingle();
+    if (epicError) throw new Error(epicError.message);
+    if (!epic) throw new Error('Nie znaleziono epica.');
+
+    const { data: assignments, error: assignmentsError } = await this.client
+      .from('assignments')
+      .select('id, task_id')
+      .eq('team_id', params.teamId)
+      .in('id', params.assignmentIds);
+    if (assignmentsError) throw new Error(assignmentsError.message);
+
+    const foundAssignmentIds = new Set((assignments ?? []).map((assignment) => String(assignment.id)));
+    for (const assignmentId of params.assignmentIds) {
+      if (!foundAssignmentIds.has(assignmentId)) throw new Error('Nie znaleziono assignmentów.');
+    }
+
+    const taskIds = Array.from(new Set((assignments ?? []).map((assignment) => String(assignment.task_id))));
+    if (!taskIds.length) throw new Error('Nie znaleziono tasków.');
+
+    const { error: updateError } = await this.client
+      .from('tasks')
+      .update({ epic_id: params.epicId })
+      .eq('workspace_id', team.workspaceId)
+      .in('id', taskIds);
+    if (updateError) throw new Error(updateError.message);
+
+    return this.snapshot(params.teamId, params.userId);
+  }
+
   async resizeAssignment(params: {
     teamId: string;
     userId: string;
