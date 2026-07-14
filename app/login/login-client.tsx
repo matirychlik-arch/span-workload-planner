@@ -17,7 +17,7 @@ export function LoginClient() {
 
   async function loginGoogle() {
     if (!supabase) {
-      setError('Brak konfiguracji Supabase. Skorzystaj z trybu demo.');
+      setError('Brak konfiguracji Supabase.');
       return;
     }
     setLoading(true);
@@ -59,7 +59,7 @@ export function LoginClient() {
       <div className="login-card">
         <img className="login-logo" src="/assets/span-logo.svg" alt="SPAN" />
         <h1>Logowanie do SPAN</h1>
-        <p>Google login + tryb demo do szybkiego startu wdrożenia.</p>
+        <p>Zaloguj się kontem Google.</p>
 
         <button onClick={loginGoogle} disabled={loading} className="login-btn">
           {loading ? 'Ładowanie…' : 'Zaloguj Google'}

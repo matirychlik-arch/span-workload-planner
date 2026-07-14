@@ -135,22 +135,19 @@ body {
   font-size: 13px;
 }
 
-.company-logo {
+.company-mark {
   width: 28px;
   height: 28px;
   min-width: 28px;
   border-radius: 8px;
   border: 0.5px solid var(--line);
-  background: #fff;
+  background: var(--text);
+  color: #fff;
   display: inline-grid;
   place-items: center;
   overflow: hidden;
-}
-
-.company-logo img {
-  width: 22px;
-  max-height: 22px;
-  object-fit: contain;
+  font-weight: 700;
+  font-size: 12px;
 }
 
 .topbar-controls {
@@ -495,7 +492,7 @@ button.secondary {
 
 .empty-create-form {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr 1fr auto;
   gap: 8px;
 }
 
@@ -1011,11 +1008,16 @@ h2 {
   line-height: 1.4;
 }
 
-.company-settings-row {
-  display: flex;
+.company-settings-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-top: 10px;
+}
+
+.company-settings-form input {
+  width: 100%;
 }
 
 .settings-label {
@@ -1213,6 +1215,11 @@ h2 {
 
   .week-switch {
     grid-template-columns: 44px minmax(180px, auto) 44px;
+  }
+
+  .empty-create-form,
+  .company-settings-form {
+    grid-template-columns: 1fr;
   }
 
   .main-grid {

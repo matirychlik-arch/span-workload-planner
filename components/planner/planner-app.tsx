@@ -164,6 +164,10 @@ function blocksLabel(count: number): string {
   return `${count} bloków`;
 }
 
+function companyInitial(name?: string): string {
+  return (name?.trim()[0] ?? 'F').toUpperCase();
+}
+
 export function PlannerApp() {
   const [teams, setTeams] = useState<TeamOption[]>([]);
   const [teamId, setTeamId] = useState<string>('');
@@ -184,6 +188,8 @@ export function PlannerApp() {
   const [taskComposerOpen, setTaskComposerOpen] = useState(false);
   const [manualTaskTitle, setManualTaskTitle] = useState('');
   const [manualEpicId, setManualEpicId] = useState('');
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
+  const [newWorkspaceName, setNewWorkspaceName] = useState('');
   const [teamNameDraft, setTeamNameDraft] = useState('');
   const [teamEditModeDraft, setTeamEditModeDraft] = useState<TeamEditMode>('collaborative');
   const [newTeamName, setNewTeamName] = useState('');
@@ -1046,6 +1052,7 @@ export function PlannerApp() {
 
   useEffect(() => {
     if (!settingsOpen || !snapshot) return;
+    setWorkspaceNameDraft(snapshot.workspace.name);
     setTeamNameDraft(currentTeam?.name ?? snapshot.team.name);
     setTeamEditModeDraft((currentTeam?.editMode ?? snapshot.team.editMode) as TeamEditMode);
     setEmployeeDrafts(
@@ -1084,6 +1091,31 @@ export function PlannerApp() {
       if (!result.length) setSnapshot(null);
     }
   }, [teamId]);
+
+  const handleSaveWorkspaceSettings = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!teamId || !canManageSettings || !workspaceNameDraft.trim()) return;
+      try {
+        setSettingsSaving(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/settings/workspace', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            teamId,
+            name: workspaceNameDraft
+          })
+        });
+        updateSnapshot(next);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się zapisać firmy.';
+        setError(message);
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    [canManageSettings, teamId, updateSnapshot, workspaceNameDraft]
+  );
 
   const handleSaveTeamSettings = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -1124,11 +1156,13 @@ export function PlannerApp() {
           body: JSON.stringify({
             teamId: teamId || undefined,
             name: newTeamName,
-            editMode: 'collaborative'
+            editMode: 'collaborative',
+            workspaceName: !teamId ? newWorkspaceName || undefined : undefined
           })
         });
         updateSnapshot(next);
         setNewTeamName('');
+        setNewWorkspaceName('');
         await refreshTeams(next.team.id);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Nie udało się utworzyć teamu.';
@@ -1137,7 +1171,7 @@ export function PlannerApp() {
         setSettingsSaving(false);
       }
     },
-    [canCreateTeams, newTeamName, refreshTeams, teamId, updateSnapshot]
+    [canCreateTeams, newTeamName, newWorkspaceName, refreshTeams, teamId, updateSnapshot]
   );
 
   const handleDeleteTeam = useCallback(async () => {
@@ -1366,9 +1400,7 @@ export function PlannerApp() {
           </div>
           <div className="topbar-actions">
             <button className="secondary company-switcher" type="button" onClick={() => setSettingsOpen(true)}>
-              <span className="company-logo">
-                <img src="/assets/span-logo.svg" alt="" />
-              </span>
+              <span className="company-mark">{companyInitial(snapshot?.workspace.name)}</span>
               <span>{snapshot?.workspace.name ?? 'Firma'}</span>
             </button>
             <button
@@ -1566,6 +1598,12 @@ export function PlannerApp() {
             <h1>Utwórz pierwszy team</h1>
             <p>Workspace jest pusty. Dodaj zespół, a potem pracowników, epiki i taski.</p>
             <form className="empty-create-form" onSubmit={handleCreateTeam}>
+              <input
+                value={newWorkspaceName}
+                onChange={(event) => setNewWorkspaceName(event.target.value)}
+                placeholder="Nazwa firmy"
+                disabled={settingsSaving}
+              />
               <input
                 value={newTeamName}
                 onChange={(event) => setNewTeamName(event.target.value)}
@@ -1921,15 +1959,17 @@ export function PlannerApp() {
             )}
             <div className="settings-section">
               <div className="settings-label">Firmy i teamy</div>
-              <div className="company-settings-row">
-                <span className="company-logo">
-                  <img src="/assets/span-logo.svg" alt="" />
-                </span>
-                <div>
-                  <div className="settings-value">{snapshot?.workspace.name ?? 'SPAN'}</div>
-                  <div className="settings-muted">Logo firmy będzie tu podmieniane po wgraniu własnego assetu.</div>
-                </div>
-              </div>
+              <form className="company-settings-form" onSubmit={handleSaveWorkspaceSettings}>
+                <input
+                  value={workspaceNameDraft}
+                  onChange={(event) => setWorkspaceNameDraft(event.target.value)}
+                  disabled={!canManageSettings || settingsSaving || !teamId}
+                  placeholder="Nazwa firmy"
+                />
+                <button type="submit" disabled={!canManageSettings || settingsSaving || !workspaceNameDraft.trim() || !teamId}>
+                  Zapisz
+                </button>
+              </form>
               <div className="settings-list">
                 {teams.length ? teams.map((team) => <span key={team.id}>{team.name}</span>) : <span>Brak teamów</span>}
               </div>

@@ -760,6 +760,7 @@ export class SupabaseStore implements DataStore {
     userId: string;
     name: string;
     editMode: TeamEditMode;
+    workspaceName?: string;
   }): Promise<PlannerSnapshot> {
     await this.ensureUserWorkspaceAndSeed(params.userId);
     let workspaceId: string;
@@ -785,6 +786,14 @@ export class SupabaseStore implements DataStore {
 
     const name = params.name.trim();
     if (!name) throw new Error('Wpisz nazwę teamu.');
+    const workspaceName = params.workspaceName?.trim();
+    if (workspaceName) {
+      const { error: workspaceError } = await this.client
+        .from('workspaces')
+        .update({ name: workspaceName })
+        .eq('id', workspaceId);
+      if (workspaceError) throw new Error(workspaceError.message);
+    }
 
     const newTeam: TeamRow = {
       id: randomUUID(),
@@ -805,6 +814,27 @@ export class SupabaseStore implements DataStore {
     if (memberError) throw new Error(memberError.message);
 
     return this.snapshot(newTeam.id, params.userId);
+  }
+
+  async updateWorkspaceSettings(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz nazwę firmy.');
+
+    const { error } = await this.client
+      .from('workspaces')
+      .update({ name })
+      .eq('id', team.workspaceId);
+    if (error) throw new Error(error.message);
+
+    return this.snapshot(params.teamId, params.userId);
   }
 
   async deleteTeam(params: { teamId: string; userId: string }): Promise<{ nextTeamId: string | null }> {

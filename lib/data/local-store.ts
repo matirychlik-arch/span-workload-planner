@@ -305,6 +305,7 @@ export class LocalStore implements DataStore {
     userId: string;
     name: string;
     editMode: TeamEditMode;
+    workspaceName?: string;
   }): Promise<PlannerSnapshot> {
     const context = params.teamId ? roleTeamAndMembers(this.state, params.teamId, params.userId) : null;
     const role: UserRole = context?.role ?? (isOwnerEmail(userEmail(this.state, params.userId)) ? 'admin' : 'employee');
@@ -312,6 +313,13 @@ export class LocalStore implements DataStore {
     assertCanManagePeople(role);
     const name = params.name.trim();
     if (!name) throw new Error('Wpisz nazwę teamu.');
+    const workspaceName = params.workspaceName?.trim();
+    if (workspaceName) {
+      this.state.workspace = {
+        ...this.state.workspace,
+        name: workspaceName
+      };
+    }
 
     const newTeamId = `team-${randomUUID()}`;
     this.state.teams.push({
@@ -328,6 +336,24 @@ export class LocalStore implements DataStore {
     });
 
     return snapshotForTeam(this.state, newTeamId, params.userId);
+  }
+
+  async updateWorkspaceSettings(params: {
+    teamId: string;
+    userId: string;
+    name: string;
+  }): Promise<PlannerSnapshot> {
+    const { role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    const name = params.name.trim();
+    if (!name) throw new Error('Wpisz nazwę firmy.');
+
+    this.state.workspace = {
+      ...this.state.workspace,
+      name
+    };
+
+    return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
   async deleteTeam(params: { teamId: string; userId: string }): Promise<{ nextTeamId: string | null }> {

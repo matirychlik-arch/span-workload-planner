@@ -142,6 +142,12 @@ export interface DataStore {
     userId: string;
     name: string;
     editMode: TeamEditMode;
+    workspaceName?: string;
+  }): Promise<PlannerSnapshot>;
+  updateWorkspaceSettings(params: {
+    teamId: string;
+    userId: string;
+    name: string;
   }): Promise<PlannerSnapshot>;
   deleteTeam(params: {
     teamId: string;
