@@ -1490,10 +1490,10 @@ export function PlannerApp() {
         {!!error && <div className="error-strip">{error}</div>}
       </header>
 
-      {snapshot && canEdit && selectedAssignments.length > 0 && (
+      {selectionMenu && snapshot && canEdit && selectedAssignments.length > 0 && (
         <div
-          className={`selection-menu ${selectionMenu ? 'at-pointer' : ''}`}
-          style={selectionMenu ? ({ left: selectionMenu.x, top: selectionMenu.y } as CSSProperties) : undefined}
+          className="selection-menu at-pointer"
+          style={{ left: selectionMenu.x, top: selectionMenu.y } as CSSProperties}
           onClick={(event) => event.stopPropagation()}
         >
           {taskEditDraft && selectedAssignments.length === 1 ? (

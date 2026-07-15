@@ -312,6 +312,58 @@ export class SupabaseStore implements DataStore {
     if (error) throw new Error(error.message);
   }
 
+  private async teamIdsForWorkspace(workspaceId: string): Promise<string[]> {
+    const { data, error } = await this.client
+      .from('teams')
+      .select('id')
+      .eq('workspace_id', workspaceId);
+    if (error) throw new Error(error.message);
+    return (data ?? []).map((team) => String(team.id));
+  }
+
+  private async removeUserMembershipsOutsideWorkspace(userId: string, workspaceId: string): Promise<void> {
+    const { data: foreignTeams, error } = await this.client
+      .from('teams')
+      .select('id')
+      .neq('workspace_id', workspaceId);
+    if (error) throw new Error(error.message);
+
+    const foreignTeamIds = (foreignTeams ?? []).map((team) => String(team.id));
+    if (!foreignTeamIds.length) return;
+
+    const { error: deleteError } = await this.client
+      .from('team_members')
+      .delete()
+      .eq('user_id', userId)
+      .in('team_id', foreignTeamIds);
+    if (deleteError) throw new Error(deleteError.message);
+  }
+
+  private async attachUserToEmployeeByName(workspaceId: string, userId: string, namePart: string): Promise<void> {
+    await this.detachUserFromWorkspaceEmployees(workspaceId, userId);
+    const teamIds = await this.teamIdsForWorkspace(workspaceId);
+
+    for (const teamId of teamIds) {
+      const { data: employee, error } = await this.client
+        .from('employees')
+        .select('id')
+        .eq('workspace_id', workspaceId)
+        .eq('team_id', teamId)
+        .eq('active', true)
+        .ilike('name', `%${namePart}%`)
+        .limit(1)
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      if (!employee?.id) continue;
+
+      const { error: updateError } = await this.client
+        .from('employees')
+        .update({ user_id: userId })
+        .eq('id', String(employee.id));
+      if (updateError) throw new Error(updateError.message);
+    }
+  }
+
   private async ensureMember(teamId: string, userId: string, role: UserRole): Promise<void> {
     const { data: member, error } = await this.client
       .from('team_members')
@@ -354,6 +406,13 @@ export class SupabaseStore implements DataStore {
     };
     const { error: userError } = await this.client.from('app_users').upsert(userRow, { onConflict: 'id' });
     if (userError) throw new Error(userError.message);
+
+    await this.removeUserMembershipsOutsideWorkspace(userId, workspaceId);
+    const teamIds = await this.teamIdsForWorkspace(workspaceId);
+    for (const teamId of teamIds) {
+      await this.ensureMember(teamId, userId, 'employee');
+    }
+    await this.attachUserToEmployeeByName(workspaceId, userId, 'Mateusz');
 
     return true;
   }
