@@ -354,7 +354,19 @@ export class SupabaseStore implements DataStore {
         .limit(1)
         .maybeSingle();
       if (error) throw new Error(error.message);
-      if (!employee?.id) continue;
+      if (!employee?.id) {
+        const { error: insertError } = await this.client.from('employees').insert({
+          id: randomUUID(),
+          workspace_id: workspaceId,
+          team_id: teamId,
+          user_id: userId,
+          name: namePart,
+          active: true,
+          tint_color: '#EEF3FF'
+        });
+        if (insertError) throw new Error(insertError.message);
+        continue;
+      }
 
       const { error: updateError } = await this.client
         .from('employees')
