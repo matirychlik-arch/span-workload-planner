@@ -158,6 +158,8 @@ function isOptimisticId(id: string): boolean {
   return id.startsWith('optimistic-');
 }
 
+const PENDING_ASSIGNMENT_MESSAGE = 'Ten blok jeszcze się zapisuje. Poczekaj sekundę i spróbuj ponownie.';
+
 function blocksLabel(count: number): string {
   if (count === 1) return '1 blok';
   if (count > 1 && count < 5) return `${count} bloki`;
@@ -741,6 +743,10 @@ export function PlannerApp() {
     async (assignmentId: string) => {
       if (!teamId || !canEdit) return;
       const toDelete = selectedIds.has(assignmentId) && selectedIds.size > 0 ? Array.from(selectedIds) : [assignmentId];
+      if (toDelete.some(isOptimisticId)) {
+        setError(PENDING_ASSIGNMENT_MESSAGE);
+        return;
+      }
       if (snapshot) {
         const removeSet = new Set(toDelete);
         updateSnapshot({
@@ -764,9 +770,9 @@ export function PlannerApp() {
   const handleAssignmentEpicChange = useCallback(
     (epicId: string) => {
       if (!teamId || !canEdit || !snapshot || !selectedIds.size) return;
-      const assignmentIds = Array.from(selectedIds).filter((id) => !isOptimisticId(id));
-      if (!assignmentIds.length) {
-        setError('Ten blok jeszcze się zapisuje. Poczekaj sekundę i spróbuj ponownie.');
+      const assignmentIds = Array.from(selectedIds);
+      if (assignmentIds.some(isOptimisticId)) {
+        setError(PENDING_ASSIGNMENT_MESSAGE);
         return;
       }
 
@@ -800,6 +806,10 @@ export function PlannerApp() {
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       if (!teamId || !canEdit || !snapshot || !taskEditDraft) return;
+      if (isOptimisticId(taskEditDraft.assignmentId)) {
+        setError(PENDING_ASSIGNMENT_MESSAGE);
+        return;
+      }
       const title = taskEditDraft.title.trim();
       if (!title) {
         setError('Wpisz nazwę taska.');
@@ -850,6 +860,10 @@ export function PlannerApp() {
   const handleResizeCommit = useCallback(
     async (assignmentId: string, durationHours?: number, durationDays?: number) => {
       if (!teamId || !canEdit) return;
+      if (isOptimisticId(assignmentId)) {
+        setError(PENDING_ASSIGNMENT_MESSAGE);
+        return;
+      }
       if (snapshot) {
         const nextAssignments = snapshot.assignments.map((assignment) =>
           assignment.id === assignmentId
@@ -1819,17 +1833,22 @@ export function PlannerApp() {
                           const title = task.title;
                           const meta = `${task.jiraKey ?? task.id} · ${pad2(assignment.startHour)}:00-${pad2(assignment.startHour + assignment.durationHours)}:00${days > 1 ? ` · ${days} dni` : ''}`;
                           const taskDescription = task.status && task.status !== 'todo' ? task.status : '';
+                          const assignmentReady = !isOptimisticId(assignment.id);
 
                           return (
                             <div
                               key={assignment.id}
                               data-onboarding="multiselect"
-                              className={`task planned ${days > 1 ? 'multi' : ''} ${isSelected ? 'selected' : ''}`}
-                              draggable={canEdit}
+                              className={`task planned ${days > 1 ? 'multi' : ''} ${isSelected ? 'selected' : ''} ${assignmentReady ? '' : 'pending'}`}
+                              draggable={canEdit && assignmentReady}
                               onContextMenu={(event) => {
                                 if (!canEdit) return;
                                 event.preventDefault();
                                 event.stopPropagation();
+                                if (!assignmentReady) {
+                                  setError(PENDING_ASSIGNMENT_MESSAGE);
+                                  return;
+                                }
                                 if (!selectedIds.has(assignment.id)) {
                                   setSelectedIds(new Set([assignment.id]));
                                 }
@@ -1839,7 +1858,10 @@ export function PlannerApp() {
                                 });
                               }}
                               onDragStart={(event) => {
-                                if (!canEdit) return;
+                                if (!canEdit || !assignmentReady) {
+                                  event.preventDefault();
+                                  return;
+                                }
                                 setSelectionMenu(null);
                                 if (!(event.metaKey || event.ctrlKey)) {
                                   if (!selectedIds.has(assignment.id)) {
@@ -1875,19 +1897,21 @@ export function PlannerApp() {
                                 width: widthStyle
                               } as CSSProperties}
                             >
-                              <button
-                                className="delete"
-                                title="Usuń"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void handleDelete(assignment.id);
-                                }}
-                              >
-                                ×
-                              </button>
+                              {assignmentReady && (
+                                <button
+                                  className="delete"
+                                  title="Usuń"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleDelete(assignment.id);
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              )}
                               <div className="task-title">{title}</div>
                               <div className="task-meta">{taskDescription || meta}</div>
-                              {canEdit && (
+                              {canEdit && assignmentReady && (
                                 <>
                                   <div
                                     className="handle-y"

@@ -869,6 +869,11 @@ h2 {
   box-shadow: 0 8px 22px rgba(26, 25, 22, 0.08);
 }
 
+.planned.pending {
+  opacity: 0.72;
+  cursor: wait;
+}
+
 .handle-y {
   position: absolute;
   left: 0;
