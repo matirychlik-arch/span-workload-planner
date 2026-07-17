@@ -1057,6 +1057,19 @@ export function PlannerApp() {
     [canImportExternal, loadPlanner, teamId, timelineStartIso]
   );
 
+  const refreshTeams = useCallback(async (nextTeamId?: string) => {
+    const result = await api<TeamOption[]>('/api/teams');
+    setTeams(result);
+    if (nextTeamId) {
+      setTeamId(nextTeamId);
+      return;
+    }
+    if (!result.some((team) => team.id === teamId)) {
+      setTeamId(result[0]?.id ?? '');
+      if (!result.length) setSnapshot(null);
+    }
+  }, [teamId]);
+
   const handleExportBackup = useCallback(async () => {
     if (!teamId || snapshot?.currentRole !== 'admin') return;
     try {
@@ -1147,19 +1160,6 @@ export function PlannerApp() {
       )
     );
   }, [currentTeam?.editMode, currentTeam?.name, settingsOpen, snapshot]);
-
-  const refreshTeams = useCallback(async (nextTeamId?: string) => {
-    const result = await api<TeamOption[]>('/api/teams');
-    setTeams(result);
-    if (nextTeamId) {
-      setTeamId(nextTeamId);
-      return;
-    }
-    if (!result.some((team) => team.id === teamId)) {
-      setTeamId(result[0]?.id ?? '');
-      if (!result.length) setSnapshot(null);
-    }
-  }, [teamId]);
 
   const handleSaveWorkspaceSettings = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
