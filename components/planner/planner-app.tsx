@@ -203,6 +203,7 @@ export function PlannerApp() {
   const [epicDrafts, setEpicDrafts] = useState<Record<string, { name: string; color: string }>>({});
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [excelImporting, setExcelImporting] = useState(false);
+  const [backupWorking, setBackupWorking] = useState(false);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
@@ -211,6 +212,7 @@ export function PlannerApp() {
   });
   const plannerWrapRef = useRef<HTMLDivElement | null>(null);
   const excelInputRef = useRef<HTMLInputElement | null>(null);
+  const backupInputRef = useRef<HTMLInputElement | null>(null);
   const shiftingRef = useRef(false);
   const timelineReloadDisabledRef = useRef(false);
   const centeredOnceRef = useRef(false);
@@ -1053,6 +1055,59 @@ export function PlannerApp() {
       }
     },
     [canImportExternal, loadPlanner, teamId, timelineStartIso]
+  );
+
+  const handleExportBackup = useCallback(async () => {
+    if (!teamId || snapshot?.currentRole !== 'admin') return;
+    try {
+      setBackupWorking(true);
+      setError('');
+      const response = await fetch(`/api/backups/export?teamId=${encodeURIComponent(teamId)}`);
+      if (!response.ok) {
+        const payload = (await response.json()) as ApiResponse<unknown>;
+        throw new Error(payload.ok === false ? payload.error : 'Nie udało się pobrać backupu.');
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `span-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Nie udało się pobrać backupu.';
+      setError(message);
+    } finally {
+      setBackupWorking(false);
+    }
+  }, [snapshot?.currentRole, teamId]);
+
+  const handleRestoreBackup = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      if (!teamId || snapshot?.currentRole !== 'admin') return;
+      const file = event.target.files?.[0];
+      if (!file) return;
+      try {
+        setBackupWorking(true);
+        setError('');
+        const form = new FormData();
+        form.append('teamId', teamId);
+        form.append('file', file);
+        const next = await uploadForm<PlannerSnapshot>('/api/backups/restore', form);
+        updateSnapshot(next);
+        setTeamId(next.team.id);
+        await refreshTeams(next.team.id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udało się przywrócić backupu.';
+        setError(message);
+      } finally {
+        setBackupWorking(false);
+        event.target.value = '';
+      }
+    },
+    [refreshTeams, snapshot?.currentRole, teamId, updateSnapshot]
   );
 
   const currentTeam = useMemo(() => teams.find((team) => team.id === teamId), [teams, teamId]);
@@ -2008,6 +2063,37 @@ export function PlannerApp() {
               />
               <div className="settings-muted">
                 Token Jiry nie jest widoczny w aplikacji. Jeśli firma pozwoli na integrację, zostanie ustawiony po stronie Vercela.
+              </div>
+            </div>
+            <div className="settings-section settings-form">
+              <div className="settings-label">Migawki i backup</div>
+              <div className="settings-muted">
+                Migawka zapisuje teamy, pracowników, epiki, taski i ułożenie kalendarza do pliku JSON.
+              </div>
+              <div className="settings-inline">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => void handleExportBackup()}
+                  disabled={!canManageSettings || backupWorking || !teamId}
+                >
+                  Pobierz migawkę
+                </button>
+                <input
+                  ref={backupInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  hidden
+                  onChange={handleRestoreBackup}
+                />
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => backupInputRef.current?.click()}
+                  disabled={!canManageSettings || backupWorking || !teamId}
+                >
+                  Przywróć z pliku
+                </button>
               </div>
             </div>
             <form className="settings-section settings-form" onSubmit={handleSaveTeamSettings}>

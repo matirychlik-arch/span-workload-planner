@@ -1,5 +1,4 @@
 import { cookies } from 'next/headers';
-import { NextRequest } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 const DEMO_COOKIE = 'span_demo_user';
@@ -10,10 +9,7 @@ export function hasSupabaseAuthConfigured(): boolean {
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
 }
 
-export async function resolveCurrentUserId(request?: NextRequest): Promise<string> {
-  const headerUser = request?.headers.get('x-span-user-id');
-  if (headerUser) return headerUser;
-
+export async function resolveCurrentUserId(): Promise<string> {
   const supabase = await createSupabaseServerClient();
   if (supabase) {
     const { data } = await supabase.auth.getUser();
@@ -22,14 +18,9 @@ export async function resolveCurrentUserId(request?: NextRequest): Promise<strin
   }
 
   if (demoAuthEnabled) {
-    if (request) {
-      const demoCookie = request.cookies.get(DEMO_COOKIE)?.value;
-      if (demoCookie) return demoCookie;
-    } else {
-      const cookieStore = await cookies();
-      const demoCookie = cookieStore.get(DEMO_COOKIE)?.value;
-      if (demoCookie) return demoCookie;
-    }
+    const cookieStore = await cookies();
+    const demoCookie = cookieStore.get(DEMO_COOKIE)?.value;
+    if (demoCookie) return demoCookie;
   }
 
   if (hasSupabaseAuthConfigured()) {

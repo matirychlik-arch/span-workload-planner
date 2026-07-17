@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { seedAssignments, seedEmployees, seedEpics, seedTasks, seedTeamMembers, seedTeams, seedUsers, seedWorkspace } from '@/lib/data/mock-seed';
 import { resolveSticky } from '@/lib/domain/sticky';
-import { Assignment, DataStore, PlannerSnapshot, Team, TeamEditMode, TeamMember, UserRole } from '@/lib/domain/types';
+import { Assignment, DataStore, PlannerBackup, PlannerSnapshot, Team, TeamEditMode, TeamMember, UserRole } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
 import { assertCanGrantRole, assertCanManagePeople, isOwnerEmail } from '@/lib/security/roles';
@@ -113,8 +113,8 @@ function snapshotForTeam(state: LocalState, teamId: string, userId: string): Pla
     members: clone(members),
     users: clone(state.users),
     employees: clone(state.employees.filter((item) => item.teamId === teamId && item.active)),
-    tasks: clone(state.tasks.filter((task) => task.workspaceId === state.workspace.id)),
-    epics: clone(state.epics.filter((epic) => epic.workspaceId === state.workspace.id)),
+    tasks: clone(state.tasks.filter((task) => task.workspaceId === state.workspace.id && (!task.teamId || task.teamId === teamId))),
+    epics: clone(state.epics.filter((epic) => epic.workspaceId === state.workspace.id && (!epic.teamId || epic.teamId === teamId))),
     assignments: clone(state.assignments.filter((assignment) => assignment.teamId === teamId && employeeIds.has(assignment.employeeId))),
     currentUserId: userId,
     currentRole: role,
@@ -250,15 +250,16 @@ export class LocalStore implements DataStore {
     const title = params.title.trim();
     if (!title) throw new Error('Wpisz nazwę taska.');
 
-    let epicId = params.epicId && this.state.epics.some((epic) => epic.id === params.epicId)
+    let epicId = params.epicId && this.state.epics.some((epic) => epic.id === params.epicId && (!epic.teamId || epic.teamId === params.teamId))
       ? params.epicId
-      : this.state.epics.find((epic) => epic.workspaceId === this.state.workspace.id)?.id;
+      : this.state.epics.find((epic) => epic.workspaceId === this.state.workspace.id && (!epic.teamId || epic.teamId === params.teamId))?.id;
 
     if (!epicId) {
       epicId = `ep-${randomUUID()}`;
       this.state.epics.push({
         id: epicId,
         workspaceId: this.state.workspace.id,
+        teamId: params.teamId,
         name: 'Manual',
         color: '#4A7FF8'
       });
@@ -267,6 +268,7 @@ export class LocalStore implements DataStore {
     this.state.tasks.push({
       id: `task-${randomUUID()}`,
       workspaceId: this.state.workspace.id,
+      teamId: params.teamId,
       source: 'manual',
       title,
       epicId,
@@ -449,6 +451,7 @@ export class LocalStore implements DataStore {
     this.state.epics.push({
       id: `ep-${randomUUID()}`,
       workspaceId: team.workspaceId,
+      teamId: params.teamId,
       name,
       color: params.color || '#4A7FF8'
     });
@@ -465,7 +468,7 @@ export class LocalStore implements DataStore {
   }): Promise<PlannerSnapshot> {
     const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
     assertCanManagePeople(role);
-    const target = this.state.epics.find((epic) => epic.id === params.epicId && epic.workspaceId === team.workspaceId);
+    const target = this.state.epics.find((epic) => epic.id === params.epicId && epic.workspaceId === team.workspaceId && (!epic.teamId || epic.teamId === params.teamId));
     if (!target) throw new Error('Nie znaleziono epica.');
     const name = params.name === undefined ? target.name : params.name.trim();
     if (!name) throw new Error('Wpisz nazwę epica.');
@@ -490,14 +493,15 @@ export class LocalStore implements DataStore {
   }): Promise<PlannerSnapshot> {
     const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
     assertCanManagePeople(role);
-    const target = this.state.epics.find((epic) => epic.id === params.epicId && epic.workspaceId === team.workspaceId);
+    const target = this.state.epics.find((epic) => epic.id === params.epicId && epic.workspaceId === team.workspaceId && (!epic.teamId || epic.teamId === params.teamId));
     if (!target) throw new Error('Nie znaleziono epica.');
 
-    let fallback = this.state.epics.find((epic) => epic.workspaceId === team.workspaceId && epic.id !== params.epicId);
+    let fallback = this.state.epics.find((epic) => epic.workspaceId === team.workspaceId && (!epic.teamId || epic.teamId === params.teamId) && epic.id !== params.epicId);
     if (!fallback) {
       fallback = {
         id: `ep-${randomUUID()}`,
         workspaceId: team.workspaceId,
+        teamId: params.teamId,
         name: 'Bez epica',
         color: '#9A9890'
       };
@@ -505,7 +509,7 @@ export class LocalStore implements DataStore {
     }
 
     this.state.tasks = this.state.tasks.map((task) =>
-      task.workspaceId === team.workspaceId && task.epicId === params.epicId
+      task.workspaceId === team.workspaceId && (!task.teamId || task.teamId === params.teamId) && task.epicId === params.epicId
         ? { ...task, epicId: fallback.id }
         : task
     );
@@ -736,10 +740,10 @@ export class LocalStore implements DataStore {
     let addedEpics = 0;
 
     for (const issue of issues) {
-      let epicId = this.state.epics[0]?.id;
+      let epicId = this.state.epics.find((epic) => !epic.teamId || epic.teamId === params.teamId)?.id;
       if (issue.epic) {
         const existingEpic = this.state.epics.find(
-          (epic) => epic.workspaceId === this.state.workspace.id && epic.jiraKey === issue.epic?.key
+          (epic) => epic.workspaceId === this.state.workspace.id && (!epic.teamId || epic.teamId === params.teamId) && epic.jiraKey === issue.epic?.key
         );
         if (existingEpic) {
           epicId = existingEpic.id;
@@ -748,6 +752,7 @@ export class LocalStore implements DataStore {
           this.state.epics.push({
             id: newEpicId,
             workspaceId: this.state.workspace.id,
+            teamId: params.teamId,
             jiraKey: issue.epic.key,
             name: issue.epic.name,
             color: issue.epic.color
@@ -760,6 +765,7 @@ export class LocalStore implements DataStore {
       const exists = this.state.tasks.some(
         (task) =>
           task.workspaceId === this.state.workspace.id &&
+          (!task.teamId || task.teamId === params.teamId) &&
           (task.jiraIssueId === issue.issueId || task.jiraKey === issue.key)
       );
       if (exists) continue;
@@ -767,12 +773,13 @@ export class LocalStore implements DataStore {
       this.state.tasks.push({
         id: `task-${randomUUID()}`,
         workspaceId: this.state.workspace.id,
+        teamId: params.teamId,
         source: 'jira',
         jiraIssueId: issue.issueId,
         jiraKey: issue.key,
         title: issue.title,
         url: issue.url,
-        epicId: epicId ?? this.state.epics[0].id,
+        epicId: epicId ?? this.state.epics.find((epic) => !epic.teamId || epic.teamId === params.teamId)?.id ?? '',
         status: issue.status
       });
       addedTasks += 1;
@@ -849,6 +856,7 @@ export class LocalStore implements DataStore {
         epic = {
           id: `epic-${randomUUID()}`,
           workspaceId: team.workspaceId,
+          teamId: params.teamId,
           name: epicName,
           color: '#4A7FF8'
         };
@@ -861,6 +869,7 @@ export class LocalStore implements DataStore {
         task = {
           id: `task-${randomUUID()}`,
           workspaceId: team.workspaceId,
+          teamId: params.teamId,
           source: 'manual',
           title: entry.title,
           epicId: epic.id,
@@ -900,5 +909,45 @@ export class LocalStore implements DataStore {
 
     applyStickyForTeam(this.state, params.teamId);
     return { addedTasks, addedAssignments, skippedRows, skippedEmployees: Array.from(skippedEmployees) };
+  }
+
+  async exportPlannerBackup(params: { teamId: string; userId: string }): Promise<PlannerBackup> {
+    const { role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      workspace: clone(this.state.workspace),
+      teams: clone(this.state.teams),
+      members: clone(this.state.teamMembers),
+      users: clone(this.state.users),
+      employees: clone(this.state.employees),
+      epics: clone(this.state.epics),
+      tasks: clone(this.state.tasks),
+      assignments: clone(this.state.assignments)
+    };
+  }
+
+  async restorePlannerBackup(params: { teamId: string; userId: string; backup: PlannerBackup }): Promise<PlannerSnapshot> {
+    const { role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanManagePeople(role);
+    if (!params.backup || params.backup.version !== 1 || !params.backup.teams.length) {
+      throw new Error('Nieprawidłowy plik backupu.');
+    }
+    this.state.workspace = clone(params.backup.workspace);
+    this.state.users = clone(params.backup.users);
+    this.state.teams = clone(params.backup.teams);
+    this.state.teamMembers = clone(params.backup.members);
+    this.state.employees = clone(params.backup.employees);
+    this.state.epics = clone(params.backup.epics);
+    this.state.tasks = clone(params.backup.tasks);
+    this.state.assignments = clone(params.backup.assignments);
+
+    const nextTeamId = this.state.teams[0]?.id;
+    if (!nextTeamId) throw new Error('Backup nie zawiera teamu.');
+    if (!this.state.teamMembers.some((member) => member.teamId === nextTeamId && member.userId === params.userId)) {
+      this.state.teamMembers.push({ teamId: nextTeamId, userId: params.userId, role: 'admin' });
+    }
+    return snapshotForTeam(this.state, nextTeamId, params.userId);
   }
 }

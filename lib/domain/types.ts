@@ -45,6 +45,7 @@ export interface Employee {
 export interface Epic {
   id: string;
   workspaceId: string;
+  teamId?: string;
   jiraKey?: string;
   name: string;
   color: string;
@@ -53,6 +54,7 @@ export interface Epic {
 export interface Task {
   id: string;
   workspaceId: string;
+  teamId?: string;
   source: TaskSource;
   jiraIssueId?: string;
   jiraKey?: string;
@@ -241,4 +243,26 @@ export interface DataStore {
     skippedRows: number;
     skippedEmployees: string[];
   }>;
+  exportPlannerBackup(params: {
+    teamId: string;
+    userId: string;
+  }): Promise<PlannerBackup>;
+  restorePlannerBackup(params: {
+    teamId: string;
+    userId: string;
+    backup: PlannerBackup;
+  }): Promise<PlannerSnapshot>;
+}
+
+export interface PlannerBackup {
+  version: 1;
+  exportedAt: string;
+  workspace: Workspace;
+  teams: Team[];
+  members: TeamMember[];
+  users: AppUser[];
+  employees: Employee[];
+  epics: Epic[];
+  tasks: Task[];
+  assignments: Assignment[];
 }

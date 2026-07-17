@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
 import { resolveSticky } from '@/lib/domain/sticky';
-import { Assignment, AppUser, DataStore, Employee, Epic, PlannerSnapshot, Task, Team, TeamEditMode, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
+import { Assignment, AppUser, DataStore, Employee, Epic, PlannerBackup, PlannerSnapshot, Task, Team, TeamEditMode, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
 import {
@@ -29,8 +29,8 @@ type AppUserRow = {
   workspace_id: string;
   email: string;
   name: string;
-  google_sub: string | null;
-  slack_user_id: string | null;
+  google_sub?: string | null;
+  slack_user_id?: string | null;
 };
 
 type TeamRow = {
@@ -60,6 +60,7 @@ type EmployeeRow = {
 type EpicRow = {
   id: string;
   workspace_id: string;
+  team_id?: string | null;
   jira_key: string | null;
   name: string;
   color: string;
@@ -68,6 +69,7 @@ type EpicRow = {
 type TaskRow = {
   id: string;
   workspace_id: string;
+  team_id?: string | null;
   source: 'jira' | 'manual';
   jira_issue_id: string | null;
   jira_key: string | null;
@@ -148,6 +150,7 @@ function toEpic(row: EpicRow): Epic {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
+    teamId: row.team_id ?? undefined,
     jiraKey: row.jira_key ?? undefined,
     name: row.name,
     color: row.color
@@ -158,6 +161,7 @@ function toTask(row: TaskRow): Task {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
+    teamId: row.team_id ?? undefined,
     source: row.source,
     jiraIssueId: row.jira_issue_id ?? undefined,
     jiraKey: row.jira_key ?? undefined,
@@ -429,11 +433,12 @@ export class SupabaseStore implements DataStore {
     return true;
   }
 
-  private async ensureDefaultEpic(workspaceId: string): Promise<void> {
+  private async ensureDefaultEpic(workspaceId: string, teamId: string): Promise<void> {
     const { data: epics, error } = await this.client
       .from('epics')
       .select('id')
       .eq('workspace_id', workspaceId)
+      .eq('team_id', teamId)
       .limit(1);
     if (error) throw new Error(error.message);
     if (epics?.length) return;
@@ -442,6 +447,7 @@ export class SupabaseStore implements DataStore {
     const { error: insertError } = await this.client.from('epics').insert({
       id: randomUUID(),
       workspace_id: workspaceId,
+      team_id: teamId,
       jira_key: null,
       name: fallbackEpic.name,
       color: fallbackEpic.color
@@ -462,7 +468,6 @@ export class SupabaseStore implements DataStore {
     if (existingUser) {
       if (isOwnerEmail(profile.email)) {
         await this.detachUserFromWorkspaceEmployees(String(existingUser.workspace_id), userId);
-        await this.ensureDefaultEpic(String(existingUser.workspace_id));
       } else {
         await this.attachMateuszWorkUser(userId, profile);
       }
@@ -493,7 +498,6 @@ export class SupabaseStore implements DataStore {
     };
     const { error: appUserError } = await this.client.from('app_users').insert(userRow);
     if (appUserError) throw new Error(appUserError.message);
-    await this.ensureDefaultEpic(workspaceId);
   }
 
   private async teamContext(teamId: string, userId: string): Promise<TeamContext> {
@@ -554,6 +558,18 @@ export class SupabaseStore implements DataStore {
     }
   }
 
+  private async assertEmployeeInTeam(teamId: string, employeeId: string): Promise<void> {
+    const { data, error } = await this.client
+      .from('employees')
+      .select('id')
+      .eq('id', employeeId)
+      .eq('team_id', teamId)
+      .eq('active', true)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) throw new Error('Wybrany pracownik nie należy do tego teamu.');
+  }
+
   private async loadAssignmentsForTeam(teamId: string): Promise<Assignment[]> {
     const { data, error } = await this.client
       .from('assignments')
@@ -579,13 +595,16 @@ export class SupabaseStore implements DataStore {
   private async snapshot(teamId: string, userId: string): Promise<PlannerSnapshot> {
     const { team, members, role } = await this.teamContext(teamId, userId);
     const canEdit = role === 'admin' || role === 'pm' || (role === 'employee' && team.editMode === 'collaborative');
+    const memberUserIds = members.map((member) => member.userId);
 
     const [workspaceResult, usersResult, employeesResult, epicsResult, tasksResult, assignmentsResult] = await Promise.all([
       this.client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', team.workspaceId).single(),
-      this.client.from('app_users').select('id, workspace_id, email, name, google_sub, slack_user_id').eq('workspace_id', team.workspaceId),
+      memberUserIds.length
+        ? this.client.from('app_users').select('id, workspace_id, email, name').eq('workspace_id', team.workspaceId).in('id', memberUserIds)
+        : this.client.from('app_users').select('id, workspace_id, email, name').eq('workspace_id', team.workspaceId).limit(0),
       this.client.from('employees').select('id, workspace_id, team_id, user_id, name, active, tint_color').eq('team_id', team.id).eq('active', true),
-      this.client.from('epics').select('id, workspace_id, jira_key, name, color').eq('workspace_id', team.workspaceId),
-      this.client.from('tasks').select('id, workspace_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id').eq('workspace_id', team.workspaceId),
+      this.client.from('epics').select('id, workspace_id, team_id, jira_key, name, color').eq('workspace_id', team.workspaceId).eq('team_id', team.id),
+      this.client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id').eq('workspace_id', team.workspaceId).eq('team_id', team.id),
       this.client.from('assignments').select('id, workspace_id, team_id, task_id, employee_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at').eq('team_id', team.id)
     ]);
 
@@ -661,6 +680,7 @@ export class SupabaseStore implements DataStore {
     const { team, role } = await this.teamContext(params.teamId, params.userId);
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, params.assignmentIds, params.targetEmployeeId);
+    await this.assertEmployeeInTeam(params.teamId, params.targetEmployeeId);
 
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
     const selected = allAssignments.filter((assignment) => params.assignmentIds.includes(assignment.id));
@@ -703,11 +723,13 @@ export class SupabaseStore implements DataStore {
     const { team, role } = await this.teamContext(params.teamId, params.userId);
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, undefined, params.employeeId);
+    await this.assertEmployeeInTeam(params.teamId, params.employeeId);
 
     const { data: task, error: taskError } = await this.client
       .from('tasks')
-      .select('id, workspace_id')
+      .select('id, workspace_id, team_id')
       .eq('id', params.taskId)
+      .eq('team_id', params.teamId)
       .maybeSingle();
     if (taskError) throw new Error(taskError.message);
     if (!task) throw new Error('Nie znaleziono taska do zaplanowania.');
@@ -753,6 +775,7 @@ export class SupabaseStore implements DataStore {
         .select('id')
         .eq('id', epicId)
         .eq('workspace_id', team.workspaceId)
+        .eq('team_id', params.teamId)
         .maybeSingle();
       if (epicError) throw new Error(epicError.message);
       if (!epic) epicId = undefined;
@@ -763,6 +786,7 @@ export class SupabaseStore implements DataStore {
         .from('epics')
         .select('id')
         .eq('workspace_id', team.workspaceId)
+        .eq('team_id', params.teamId)
         .limit(1)
         .maybeSingle();
       if (firstEpicError) throw new Error(firstEpicError.message);
@@ -773,6 +797,7 @@ export class SupabaseStore implements DataStore {
       const newEpic: EpicRow = {
         id: randomUUID(),
         workspace_id: team.workspaceId,
+        team_id: params.teamId,
         jira_key: null,
         name: 'Manual',
         color: '#4A7FF8'
@@ -785,6 +810,7 @@ export class SupabaseStore implements DataStore {
     const newTask: TaskRow = {
       id: randomUUID(),
       workspace_id: team.workspaceId,
+      team_id: params.teamId,
       source: 'manual',
       jira_issue_id: null,
       jira_key: null,
@@ -883,6 +909,7 @@ export class SupabaseStore implements DataStore {
       role
     });
     if (memberError) throw new Error(memberError.message);
+    await this.ensureDefaultEpic(workspaceId, newTeam.id);
 
     return this.snapshot(newTeam.id, params.userId);
   }
@@ -1015,6 +1042,7 @@ export class SupabaseStore implements DataStore {
     const epic: EpicRow = {
       id: randomUUID(),
       workspace_id: team.workspaceId,
+      team_id: params.teamId,
       jira_key: null,
       name,
       color: params.color || '#4A7FF8'
@@ -1042,6 +1070,7 @@ export class SupabaseStore implements DataStore {
       .select('id, name, color')
       .eq('id', params.epicId)
       .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
       .maybeSingle();
     if (epicError) throw new Error(epicError.message);
     if (!currentEpic) throw new Error('Nie znaleziono epica.');
@@ -1056,7 +1085,8 @@ export class SupabaseStore implements DataStore {
         color: params.color ?? currentEpic.color
       })
       .eq('id', params.epicId)
-      .eq('workspace_id', team.workspaceId);
+      .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId);
     if (error) throw new Error(error.message);
 
     return this.snapshot(params.teamId, params.userId);
@@ -1076,6 +1106,7 @@ export class SupabaseStore implements DataStore {
       .select('id')
       .eq('id', params.epicId)
       .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
       .maybeSingle();
     if (targetError) throw new Error(targetError.message);
     if (!targetEpic) throw new Error('Nie znaleziono epica.');
@@ -1084,6 +1115,7 @@ export class SupabaseStore implements DataStore {
       .from('epics')
       .select('id')
       .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
       .neq('id', params.epicId)
       .limit(1)
       .maybeSingle();
@@ -1094,6 +1126,7 @@ export class SupabaseStore implements DataStore {
       const newEpic: EpicRow = {
         id: randomUUID(),
         workspace_id: team.workspaceId,
+        team_id: params.teamId,
         jira_key: null,
         name: 'Bez epica',
         color: '#9A9890'
@@ -1107,6 +1140,7 @@ export class SupabaseStore implements DataStore {
       .from('tasks')
       .update({ epic_id: fallbackEpicId })
       .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
       .eq('epic_id', params.epicId);
     if (taskError) throw new Error(taskError.message);
 
@@ -1114,7 +1148,8 @@ export class SupabaseStore implements DataStore {
       .from('epics')
       .delete()
       .eq('id', params.epicId)
-      .eq('workspace_id', team.workspaceId);
+      .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId);
     if (deleteError) throw new Error(deleteError.message);
 
     return this.snapshot(params.teamId, params.userId);
@@ -1136,7 +1171,18 @@ export class SupabaseStore implements DataStore {
       .eq('id', params.userId)
       .maybeSingle();
     if (currentUserError) throw new Error(currentUserError.message);
-    assertCanGrantRole(currentUser?.email ? String(currentUser.email) : undefined, params.role);
+    const currentUserEmail = currentUser?.email ? String(currentUser.email) : undefined;
+    assertCanGrantRole(currentUserEmail, params.role);
+
+    const { data: targetUser, error: targetUserError } = await this.client
+      .from('app_users')
+      .select('email')
+      .eq('id', params.memberUserId)
+      .maybeSingle();
+    if (targetUserError) throw new Error(targetUserError.message);
+    if (isOwnerEmail(targetUser?.email ? String(targetUser.email) : undefined) && !isOwnerEmail(currentUserEmail)) {
+      throw new Error('Roli właściciela workspace nie może zmieniać inny admin.');
+    }
 
     const { data: member, error: memberError } = await this.client
       .from('team_members')
@@ -1195,6 +1241,7 @@ export class SupabaseStore implements DataStore {
       .from('epics')
       .select('id')
       .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
       .eq('id', params.epicId)
       .maybeSingle();
     if (epicError) throw new Error(epicError.message);
@@ -1219,6 +1266,7 @@ export class SupabaseStore implements DataStore {
       .from('tasks')
       .update({ epic_id: params.epicId })
       .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
       .in('id', taskIds);
     if (updateError) throw new Error(updateError.message);
 
@@ -1254,6 +1302,7 @@ export class SupabaseStore implements DataStore {
       .from('epics')
       .select('id')
       .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
       .eq('id', params.epicId)
       .maybeSingle();
     if (epicError) throw new Error(epicError.message);
@@ -1267,6 +1316,7 @@ export class SupabaseStore implements DataStore {
         epic_id: params.epicId
       })
       .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
       .eq('id', String(assignment.task_id));
     if (updateError) throw new Error(updateError.message);
 
@@ -1314,6 +1364,7 @@ export class SupabaseStore implements DataStore {
     const { team, role } = await this.teamContext(params.teamId, params.userId);
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, params.assignmentIds, params.targetEmployeeId);
+    await this.assertEmployeeInTeam(params.teamId, params.targetEmployeeId);
 
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
     const selected = allAssignments.filter((assignment) => params.assignmentIds.includes(assignment.id));
@@ -1358,6 +1409,7 @@ export class SupabaseStore implements DataStore {
     );
     for (const move of params.moves) {
       await this.assertEmployeeOwnScope(params.teamId, params.userId, role, undefined, move.employeeId);
+      await this.assertEmployeeInTeam(params.teamId, move.employeeId);
     }
 
     const moveMap = new Map(params.moves.map((move) => [move.assignmentId, move]));
@@ -1389,15 +1441,17 @@ export class SupabaseStore implements DataStore {
 
     const { data: existingEpicsData, error: epicsError } = await this.client
       .from('epics')
-      .select('id, workspace_id, jira_key, name, color')
-      .eq('workspace_id', team.workspaceId);
+      .select('id, workspace_id, team_id, jira_key, name, color')
+      .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId);
     if (epicsError) throw new Error(epicsError.message);
     const existingEpics = (existingEpicsData as EpicRow[]).map(toEpic);
 
     const { data: existingTasksData, error: tasksError } = await this.client
       .from('tasks')
-      .select('id, workspace_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
-      .eq('workspace_id', team.workspaceId);
+      .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
+      .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId);
     if (tasksError) throw new Error(tasksError.message);
     const existingTasks = (existingTasksData as TaskRow[]).map(toTask);
 
@@ -1418,6 +1472,7 @@ export class SupabaseStore implements DataStore {
           const newEpic: EpicRow = {
             id: randomUUID(),
             workspace_id: team.workspaceId,
+            team_id: params.teamId,
             jira_key: issue.epic.key,
             name: issue.epic.name,
             color: issue.epic.color
@@ -1436,6 +1491,7 @@ export class SupabaseStore implements DataStore {
       const newTask: TaskRow = {
         id: randomUUID(),
         workspace_id: team.workspaceId,
+        team_id: params.teamId,
         source: 'jira',
         jira_issue_id: issue.issueId,
         jira_key: issue.key,
@@ -1477,12 +1533,14 @@ export class SupabaseStore implements DataStore {
         .eq('active', true),
       this.client
         .from('epics')
-        .select('id, workspace_id, jira_key, name, color')
-        .eq('workspace_id', team.workspaceId),
+        .select('id, workspace_id, team_id, jira_key, name, color')
+        .eq('workspace_id', team.workspaceId)
+        .eq('team_id', params.teamId),
       this.client
         .from('tasks')
-        .select('id, workspace_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
+        .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
         .eq('workspace_id', team.workspaceId)
+        .eq('team_id', params.teamId)
     ]);
     if (employeesResult.error) throw new Error(employeesResult.error.message);
     if (epicsResult.error) throw new Error(epicsResult.error.message);
@@ -1537,6 +1595,7 @@ export class SupabaseStore implements DataStore {
         const newEpic: EpicRow = {
           id: randomUUID(),
           workspace_id: team.workspaceId,
+          team_id: params.teamId,
           jira_key: null,
           name: epicName,
           color: '#4A7FF8'
@@ -1552,6 +1611,7 @@ export class SupabaseStore implements DataStore {
         const newTask: TaskRow = {
           id: randomUUID(),
           workspace_id: team.workspaceId,
+          team_id: params.teamId,
           source: 'manual',
           jira_issue_id: null,
           jira_key: null,
@@ -1599,5 +1659,185 @@ export class SupabaseStore implements DataStore {
     const resolved = resolveSticky([...allAssignments, ...newAssignments]);
     await this.persistResolvedAssignments(allAssignments, resolved);
     return { addedTasks, addedAssignments, skippedRows, skippedEmployees: Array.from(skippedEmployees) };
+  }
+
+  async exportPlannerBackup(params: { teamId: string; userId: string }): Promise<PlannerBackup> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+
+    const [workspaceResult, teamsResult, usersResult, membersResult, employeesResult, epicsResult, tasksResult, assignmentsResult] =
+      await Promise.all([
+        this.client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', team.workspaceId).single(),
+        this.client.from('teams').select('id, workspace_id, name, pm_user_id, edit_mode').eq('workspace_id', team.workspaceId),
+        this.client.from('app_users').select('id, workspace_id, email, name, google_sub, slack_user_id').eq('workspace_id', team.workspaceId),
+        this.client.from('team_members').select('team_id, user_id, role'),
+        this.client.from('employees').select('id, workspace_id, team_id, user_id, name, active, tint_color').eq('workspace_id', team.workspaceId),
+        this.client.from('epics').select('id, workspace_id, team_id, jira_key, name, color').eq('workspace_id', team.workspaceId),
+        this.client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id').eq('workspace_id', team.workspaceId),
+        this.client.from('assignments').select('id, workspace_id, team_id, task_id, employee_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at').eq('workspace_id', team.workspaceId)
+      ]);
+
+    if (workspaceResult.error) throw new Error(workspaceResult.error.message);
+    if (teamsResult.error) throw new Error(teamsResult.error.message);
+    if (usersResult.error) throw new Error(usersResult.error.message);
+    if (membersResult.error) throw new Error(membersResult.error.message);
+    if (employeesResult.error) throw new Error(employeesResult.error.message);
+    if (epicsResult.error) throw new Error(epicsResult.error.message);
+    if (tasksResult.error) throw new Error(tasksResult.error.message);
+    if (assignmentsResult.error) throw new Error(assignmentsResult.error.message);
+
+    const teamIds = new Set((teamsResult.data as TeamRow[]).map((item) => item.id));
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      workspace: toWorkspace(workspaceResult.data as WorkspaceRow),
+      teams: (teamsResult.data as TeamRow[]).map(toTeam),
+      members: (membersResult.data as TeamMemberRow[]).filter((member) => teamIds.has(member.team_id)).map(toTeamMember),
+      users: (usersResult.data as AppUserRow[]).map(toUser),
+      employees: (employeesResult.data as EmployeeRow[]).map(toEmployee),
+      epics: (epicsResult.data as EpicRow[]).map(toEpic),
+      tasks: (tasksResult.data as TaskRow[]).map(toTask),
+      assignments: (assignmentsResult.data as AssignmentRow[]).map(toAssignment)
+    };
+  }
+
+  async restorePlannerBackup(params: { teamId: string; userId: string; backup: PlannerBackup }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanManagePeople(role);
+    if (!params.backup || params.backup.version !== 1) {
+      throw new Error('Nieobsługiwana wersja backupu.');
+    }
+
+    const backupTeams = params.backup.teams ?? [];
+    if (!backupTeams.length) {
+      throw new Error('Backup nie zawiera żadnego teamu.');
+    }
+
+    const { data: workspaceTeams, error: teamsError } = await this.client
+      .from('teams')
+      .select('id')
+      .eq('workspace_id', team.workspaceId);
+    if (teamsError) throw new Error(teamsError.message);
+    const currentTeamIds = (workspaceTeams ?? []).map((item) => String(item.id));
+
+    await this.client.from('assignments').delete().eq('workspace_id', team.workspaceId);
+    await this.client.from('tasks').delete().eq('workspace_id', team.workspaceId);
+    await this.client.from('employees').delete().eq('workspace_id', team.workspaceId);
+    if (currentTeamIds.length) {
+      await this.client.from('team_members').delete().in('team_id', currentTeamIds);
+    }
+    await this.client.from('teams').delete().eq('workspace_id', team.workspaceId);
+    await this.client.from('epics').delete().eq('workspace_id', team.workspaceId);
+
+    const workspaceName = params.backup.workspace?.name?.trim() || team.name;
+    const { error: workspaceError } = await this.client
+      .from('workspaces')
+      .update({ name: workspaceName })
+      .eq('id', team.workspaceId);
+    if (workspaceError) throw new Error(workspaceError.message);
+
+    const userRows: AppUserRow[] = (params.backup.users ?? []).map((user) => ({
+      id: user.id,
+      workspace_id: team.workspaceId,
+      email: user.email,
+      name: user.name,
+      google_sub: user.googleSub ?? null,
+      slack_user_id: user.slackUserId ?? null
+    }));
+    if (userRows.length) {
+      const { error } = await this.client.from('app_users').upsert(userRows, { onConflict: 'id' });
+      if (error) throw new Error(error.message);
+    }
+
+    const teamRows: TeamRow[] = backupTeams.map((item) => ({
+      id: item.id,
+      workspace_id: team.workspaceId,
+      name: item.name,
+      pm_user_id: item.pmUserId,
+      edit_mode: item.editMode
+    }));
+    const { error: insertTeamsError } = await this.client.from('teams').insert(teamRows);
+    if (insertTeamsError) throw new Error(insertTeamsError.message);
+
+    const restoredTeamIds = new Set(teamRows.map((item) => item.id));
+    const memberRows: TeamMemberRow[] = (params.backup.members ?? [])
+      .filter((member) => restoredTeamIds.has(member.teamId))
+      .map((member) => ({
+        team_id: member.teamId,
+        user_id: member.userId,
+        role: member.role
+      }));
+    for (const restoredTeamId of restoredTeamIds) {
+      if (!memberRows.some((member) => member.team_id === restoredTeamId && member.user_id === params.userId)) {
+        memberRows.push({ team_id: restoredTeamId, user_id: params.userId, role: 'admin' });
+      }
+    }
+    if (memberRows.length) {
+      const { error } = await this.client.from('team_members').insert(memberRows);
+      if (error) throw new Error(error.message);
+    }
+
+    const employeeRows: EmployeeRow[] = (params.backup.employees ?? [])
+      .filter((employee) => restoredTeamIds.has(employee.teamId))
+      .map((employee) => ({
+        id: employee.id,
+        workspace_id: team.workspaceId,
+        team_id: employee.teamId,
+        user_id: employee.userId ?? null,
+        name: employee.name,
+        active: employee.active,
+        tint_color: employee.tintColor ?? null
+      }));
+    if (employeeRows.length) {
+      const { error } = await this.client.from('employees').insert(employeeRows);
+      if (error) throw new Error(error.message);
+    }
+
+    const epicRows: EpicRow[] = (params.backup.epics ?? [])
+      .filter((epic) => epic.teamId && restoredTeamIds.has(epic.teamId))
+      .map((epic) => ({
+        id: epic.id,
+        workspace_id: team.workspaceId,
+        team_id: epic.teamId ?? null,
+        jira_key: epic.jiraKey ?? null,
+        name: epic.name,
+        color: epic.color
+      }));
+    if (epicRows.length) {
+      const { error } = await this.client.from('epics').insert(epicRows);
+      if (error) throw new Error(error.message);
+    }
+
+    const taskRows: TaskRow[] = (params.backup.tasks ?? [])
+      .filter((task) => task.teamId && restoredTeamIds.has(task.teamId))
+      .map((task) => ({
+        id: task.id,
+        workspace_id: team.workspaceId,
+        team_id: task.teamId ?? null,
+        source: task.source,
+        jira_issue_id: task.jiraIssueId ?? null,
+        jira_key: task.jiraKey ?? null,
+        title: task.title,
+        url: task.url ?? null,
+        epic_id: task.epicId,
+        status: task.status ?? null,
+        assignee_id: task.assigneeId ?? null
+      }));
+    if (taskRows.length) {
+      const { error } = await this.client.from('tasks').insert(taskRows);
+      if (error) throw new Error(error.message);
+    }
+
+    const assignmentRows: AssignmentRow[] = (params.backup.assignments ?? [])
+      .filter((assignment) => restoredTeamIds.has(assignment.teamId))
+      .map((assignment) => toAssignmentRow({ ...assignment, workspaceId: team.workspaceId }));
+    if (assignmentRows.length) {
+      const { error } = await this.client.from('assignments').insert(assignmentRows);
+      if (error) throw new Error(error.message);
+    }
+
+    return this.snapshot(teamRows[0].id, params.userId);
   }
 }

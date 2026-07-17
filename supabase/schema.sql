@@ -50,6 +50,7 @@ create table if not exists employees (
 create table if not exists epics (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id) on delete cascade,
+  team_id uuid references teams(id) on delete cascade,
   jira_key text,
   name text not null,
   color text not null,
@@ -59,6 +60,7 @@ create table if not exists epics (
 create table if not exists tasks (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id) on delete cascade,
+  team_id uuid references teams(id) on delete cascade,
   source text not null check (source in ('jira', 'manual')),
   jira_issue_id text,
   jira_key text,
@@ -87,19 +89,28 @@ create table if not exists assignments (
   created_at timestamptz not null default now()
 );
 
+alter table epics
+  add column if not exists team_id uuid references teams(id) on delete cascade;
+
+alter table tasks
+  add column if not exists team_id uuid references teams(id) on delete cascade;
+
 create index if not exists assignments_team_employee_date_idx
   on assignments(team_id, employee_id, start_date);
 
-create unique index if not exists epics_workspace_jira_key_uidx
-  on epics(workspace_id, jira_key)
+drop index if exists epics_workspace_jira_key_uidx;
+create unique index if not exists epics_team_jira_key_uidx
+  on epics(team_id, jira_key)
   where jira_key is not null;
 
-create unique index if not exists tasks_workspace_jira_issue_uidx
-  on tasks(workspace_id, jira_issue_id)
+drop index if exists tasks_workspace_jira_issue_uidx;
+create unique index if not exists tasks_team_jira_issue_uidx
+  on tasks(team_id, jira_issue_id)
   where jira_issue_id is not null;
 
-create unique index if not exists tasks_workspace_jira_key_uidx
-  on tasks(workspace_id, jira_key)
+drop index if exists tasks_workspace_jira_key_uidx;
+create unique index if not exists tasks_team_jira_key_uidx
+  on tasks(team_id, jira_key)
   where jira_key is not null;
 
 create or replace function set_assignments_updated_at()

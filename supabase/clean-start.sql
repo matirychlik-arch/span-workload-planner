@@ -20,7 +20,4 @@ begin
    where team_id in (select id from teams where workspace_id = target_workspace_id);
   delete from teams where workspace_id = target_workspace_id;
   delete from epics where workspace_id = target_workspace_id;
-
-  insert into epics (workspace_id, jira_key, name, color)
-  values (target_workspace_id, null, 'Manual', '#4A7FF8');
 end $$;
