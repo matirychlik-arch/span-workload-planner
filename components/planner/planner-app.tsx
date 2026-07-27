@@ -81,6 +81,14 @@ type TaskEditDraft = {
   epicId: string;
 };
 
+type CloudBackupFile = {
+  path: string;
+  name: string;
+  createdAt?: string;
+  updatedAt?: string;
+  size?: number;
+};
+
 const HOUR_HEIGHT = 52;
 const DAY_WIDTH = 220;
 const TIMELINE_TOP = 18;
@@ -204,6 +212,7 @@ export function PlannerApp() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [excelImporting, setExcelImporting] = useState(false);
   const [backupWorking, setBackupWorking] = useState(false);
+  const [cloudBackups, setCloudBackups] = useState<CloudBackupFile[]>([]);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
@@ -1123,6 +1132,45 @@ export function PlannerApp() {
     [refreshTeams, snapshot?.currentRole, teamId, updateSnapshot]
   );
 
+
+  const loadCloudBackups = useCallback(async () => {
+    if (!teamId || snapshot?.currentRole !== 'admin') return;
+    try {
+      setError('');
+      const files = await api<CloudBackupFile[]>('/api/backups/cloud?teamId=' + encodeURIComponent(teamId));
+      setCloudBackups(files);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Nie udalo sie pobrac migawek z chmury.';
+      setError(message);
+    }
+  }, [snapshot?.currentRole, teamId]);
+
+  const handleRestoreCloudBackup = useCallback(
+    async (path: string) => {
+      if (!teamId || snapshot?.currentRole !== 'admin') return;
+      const confirmed = window.confirm('Przywrocic te migawke? Aktualny stan kalendarza zostanie zastapiony.');
+      if (!confirmed) return;
+      try {
+        setBackupWorking(true);
+        setError('');
+        const next = await api<PlannerSnapshot>('/api/backups/cloud/restore', {
+          method: 'POST',
+          body: JSON.stringify({ teamId, path })
+        });
+        updateSnapshot(next);
+        setTeamId(next.team.id);
+        await refreshTeams(next.team.id);
+        await loadCloudBackups();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Nie udalo sie przywrocic migawki z chmury.';
+        setError(message);
+      } finally {
+        setBackupWorking(false);
+      }
+    },
+    [loadCloudBackups, refreshTeams, snapshot?.currentRole, teamId, updateSnapshot]
+  );
+
   const currentTeam = useMemo(() => teams.find((team) => team.id === teamId), [teams, teamId]);
   const currentUser = useMemo(
     () => snapshot?.users.find((user) => user.id === snapshot.currentUserId),
@@ -1160,6 +1208,11 @@ export function PlannerApp() {
       )
     );
   }, [currentTeam?.editMode, currentTeam?.name, settingsOpen, snapshot]);
+
+  useEffect(() => {
+    if (!settingsOpen || !canManageSettings || !teamId) return;
+    void loadCloudBackups();
+  }, [canManageSettings, loadCloudBackups, settingsOpen, teamId]);
 
   const handleSaveWorkspaceSettings = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -2094,6 +2147,39 @@ export function PlannerApp() {
                 >
                   Przywróć z pliku
                 </button>
+              </div>
+              <div className="backup-cloud-list">
+                <div className="settings-inline backup-cloud-head">
+                  <span className="settings-muted">Automatyczne migawki: 12:00 i 17:00</span>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void loadCloudBackups()}
+                    disabled={!canManageSettings || backupWorking || !teamId}
+                  >
+                    Odśwież
+                  </button>
+                </div>
+                {cloudBackups.length ? (
+                  cloudBackups.map((backup) => (
+                    <div key={backup.path} className="backup-cloud-row">
+                      <div>
+                        <div className="member-name">{backup.name}</div>
+                        <div className="member-email">{backup.path}</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void handleRestoreCloudBackup(backup.path)}
+                        disabled={!canManageSettings || backupWorking || !teamId}
+                      >
+                        Przywróć
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="settings-muted">Brak zapisanych migawek w chmurze.</div>
+                )}
               </div>
             </div>
             <form className="settings-section settings-form" onSubmit={handleSaveTeamSettings}>

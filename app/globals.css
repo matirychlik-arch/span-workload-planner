@@ -1111,6 +1111,33 @@ h2 {
   font-size: 13px;
 }
 
+.backup-cloud-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.backup-cloud-head {
+  grid-template-columns: 1fr auto;
+}
+
+.backup-cloud-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  background: #fff;
+  border: 0.5px solid var(--line);
+  border-radius: 8px;
+}
+
+.backup-cloud-row .member-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .member-email {
   margin-top: 2px;
   color: var(--ter);

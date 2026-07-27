@@ -29,7 +29,16 @@ Minimalny tryb działania:
 Tryb integracyjny:
 - ustaw `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
 - ustaw `NEXT_PUBLIC_ENABLE_DEMO_AUTH=false` na środowisku produkcyjnym,
-- ustaw `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`.
+- ustaw `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`,
+- ustaw `CRON_SECRET` w Vercelu, żeby chronić endpoint automatycznych backupów,
+- opcjonalnie ustaw `SUPABASE_BACKUP_BUCKET`; domyślnie używany jest bucket `planner-backups`.
+
+## Backupy
+
+- Ręczny eksport JSON zostaje dostępny w ustawieniach admina.
+- Automatyczne migawki zapisują się w Supabase Storage do prywatnego bucketa `planner-backups`.
+- Vercel Cron odpala `/api/backups/scheduled` co godzinę, a aplikacja zapisuje backup tylko o 12:00 i 17:00 czasu Europe/Warsaw.
+- Admin może w ustawieniach odświeżyć listę migawek i przywrócić wybraną wersję.
 
 ## Deploy (Supabase + Vercel)
 
