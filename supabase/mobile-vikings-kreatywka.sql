@@ -49,6 +49,11 @@ begin
   values (target_team_id, owner_user_id, 'admin')
   on conflict (team_id, user_id) do update set role = excluded.role;
 
+  update employees
+     set user_id = null
+   where workspace_id = target_workspace_id
+     and user_id = owner_user_id;
+
   insert into epics (workspace_id, team_id, jira_key, name, color)
   select target_workspace_id, target_team_id, null, 'Manual', '#4A7FF8'
   where not exists (

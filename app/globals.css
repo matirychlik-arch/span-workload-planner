@@ -1150,6 +1150,17 @@ h2 {
   font-size: 12px;
 }
 
+.account-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.logout-btn {
+  white-space: nowrap;
+}
+
 .employee-settings-row {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) 42px auto auto;

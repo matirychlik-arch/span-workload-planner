@@ -1,9 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { CSSProperties, ChangeEvent, FormEvent } from 'react';
 import type { Assignment, Epic, PlannerSnapshot, Task, TeamEditMode, UserRole } from '@/lib/domain/types';
 import { resolveSticky } from '@/lib/domain/sticky';
+import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { OWNER_EMAIL } from '@/lib/security/roles';
 import {
   addDays,
@@ -184,6 +186,8 @@ function taskDescription(task: Task): string {
 }
 
 export function PlannerApp() {
+  const router = useRouter();
+  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [teams, setTeams] = useState<TeamOption[]>([]);
   const [teamId, setTeamId] = useState<string>('');
   const [snapshot, setSnapshot] = useState<PlannerSnapshot | null>(null);
@@ -218,6 +222,7 @@ export function PlannerApp() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [excelImporting, setExcelImporting] = useState(false);
   const [backupWorking, setBackupWorking] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [cloudBackups, setCloudBackups] = useState<CloudBackupFile[]>([]);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
@@ -236,6 +241,7 @@ export function PlannerApp() {
   const plannerMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const latestPlannerMutationIdRef = useRef(0);
   const pendingPlannerMutationCountRef = useRef(0);
+  const latestPlannerMutationErrorRef = useRef<string | null>(null);
 
   const visibleDays = useMemo(() => {
     const start = parseIsoDate(timelineStartIso);
@@ -366,10 +372,12 @@ export function PlannerApp() {
       const mutationId = latestPlannerMutationIdRef.current + 1;
       latestPlannerMutationIdRef.current = mutationId;
       pendingPlannerMutationCountRef.current += 1;
+      latestPlannerMutationErrorRef.current = null;
 
       const run = async () => {
         try {
           const next = await request();
+          if (mutationId === latestPlannerMutationIdRef.current) latestPlannerMutationErrorRef.current = null;
           pendingPlannerMutationCountRef.current = Math.max(0, pendingPlannerMutationCountRef.current - 1);
           if (mutationId === latestPlannerMutationIdRef.current && pendingPlannerMutationCountRef.current === 0) {
             updateSnapshot(next);
@@ -377,6 +385,7 @@ export function PlannerApp() {
         } catch (err) {
           pendingPlannerMutationCountRef.current = Math.max(0, pendingPlannerMutationCountRef.current - 1);
           const message = err instanceof Error ? err.message : errorFallback;
+          if (mutationId === latestPlannerMutationIdRef.current) latestPlannerMutationErrorRef.current = message;
           setError(message);
           if (mutationId === latestPlannerMutationIdRef.current && teamId) {
             try {
@@ -1188,6 +1197,30 @@ export function PlannerApp() {
   const canManageSettings = snapshot?.currentRole === 'admin';
   const canCreateTeams = canManageSettings || teams.length === 0;
   const canGrantAdmins = currentUser?.email?.toLowerCase() === OWNER_EMAIL;
+
+  const handleLogout = useCallback(async () => {
+    if (loggingOut) return;
+    try {
+      setLoggingOut(true);
+      setError('');
+      await plannerMutationQueueRef.current.catch(() => undefined);
+      if (latestPlannerMutationErrorRef.current) {
+        throw new Error('Nie wylogowuję, bo ostatni zapis nie przeszedł: ' + latestPlannerMutationErrorRef.current);
+      }
+      if (supabase) {
+        const { error: signOutError } = await supabase.auth.signOut();
+        if (signOutError) throw signOutError;
+      }
+      const response = await fetch('/api/auth/logout', { method: 'POST' });
+      if (!response.ok) throw new Error('Nie udało się wylogować.');
+      router.replace('/login');
+      router.refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Nie udało się wylogować.';
+      setError(message);
+      setLoggingOut(false);
+    }
+  }, [loggingOut, router, supabase]);
 
   useEffect(() => {
     if (!settingsOpen || !snapshot) return;
@@ -2107,6 +2140,19 @@ export function PlannerApp() {
             {canManageSettings && !canGrantAdmins && (
               <div className="settings-note">Role admin może nadawać tylko {OWNER_EMAIL}.</div>
             )}
+            <div className="settings-section account-settings-section">
+              <div className="settings-label">Konto</div>
+              <div className="account-settings-row">
+                <div>
+                  <div className="member-name">{currentUser?.name ?? 'Użytkownik'}</div>
+                  <div className="member-email">{currentUser?.email ?? 'brak maila'}</div>
+                  <div className="settings-muted">Zmiany w plannerze zapisują się automatycznie po każdej akcji.</div>
+                </div>
+                <button type="button" className="secondary danger-btn logout-btn" onClick={() => void handleLogout()} disabled={loggingOut}>
+                  {loggingOut ? 'Wylogowuję...' : 'Wyloguj'}
+                </button>
+              </div>
+            </div>
             <div className="settings-section">
               <div className="settings-label">Firmy i teamy</div>
               <form className="company-settings-form" onSubmit={handleSaveWorkspaceSettings}>
