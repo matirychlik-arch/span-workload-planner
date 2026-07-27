@@ -47,6 +47,19 @@ create table if not exists employees (
   created_at timestamptz not null default now()
 );
 
+create table if not exists workspace_invites (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references workspaces(id) on delete cascade,
+  team_id uuid not null references teams(id) on delete cascade,
+  email text not null,
+  name text not null,
+  role text not null check (role in ('admin', 'pm', 'employee')),
+  employee_name text,
+  tint_color text,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists epics (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id) on delete cascade,
@@ -98,6 +111,10 @@ alter table tasks
 create index if not exists assignments_team_employee_date_idx
   on assignments(team_id, employee_id, start_date);
 
+create unique index if not exists workspace_invites_email_uidx
+  on workspace_invites(lower(email))
+  where active = true;
+
 drop index if exists epics_workspace_jira_key_uidx;
 create unique index if not exists epics_team_jira_key_uidx
   on epics(team_id, jira_key)
@@ -131,6 +148,7 @@ alter table app_users enable row level security;
 alter table teams enable row level security;
 alter table team_members enable row level security;
 alter table employees enable row level security;
+alter table workspace_invites enable row level security;
 alter table epics enable row level security;
 alter table tasks enable row level security;
 alter table assignments enable row level security;
