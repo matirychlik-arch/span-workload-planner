@@ -178,6 +178,11 @@ function companyInitial(name?: string): string {
   return (name?.trim()[0] ?? 'F').toUpperCase();
 }
 
+function taskDescription(task: Task): string {
+  const description = task.status?.trim();
+  return description && description.toLowerCase() !== 'todo' ? description : '';
+}
+
 export function PlannerApp() {
   const [teams, setTeams] = useState<TeamOption[]>([]);
   const [teamId, setTeamId] = useState<string>('');
@@ -197,6 +202,7 @@ export function PlannerApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskComposerOpen, setTaskComposerOpen] = useState(false);
   const [manualTaskTitle, setManualTaskTitle] = useState('');
+  const [manualTaskDescription, setManualTaskDescription] = useState('');
   const [manualEpicId, setManualEpicId] = useState('');
   const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
   const [newWorkspaceName, setNewWorkspaceName] = useState('');
@@ -982,6 +988,7 @@ export function PlannerApp() {
       event?.preventDefault();
       if (!teamId || !canEdit) return;
       const title = manualTaskTitle.trim();
+      const description = manualTaskDescription.trim();
       if (!title) return;
       const previousSnapshot = snapshot;
       try {
@@ -999,7 +1006,7 @@ export function PlannerApp() {
                   source: 'manual',
                   title,
                   epicId: fallbackEpicId,
-                  status: 'todo'
+                  status: description || 'todo'
                 }
               ]
             });
@@ -1010,11 +1017,13 @@ export function PlannerApp() {
           body: JSON.stringify({
             teamId,
             title,
-            epicId: manualEpicId || undefined
+            epicId: manualEpicId || undefined,
+            description: description || undefined
           })
         });
         updateSnapshot(next);
         setManualTaskTitle('');
+        setManualTaskDescription('');
         setManualEpicId('');
         setTaskComposerOpen(false);
         setSidebarCollapsed(false);
@@ -1024,7 +1033,7 @@ export function PlannerApp() {
         setError(message);
       }
     },
-    [canEdit, manualEpicId, manualTaskTitle, snapshot, teamId, updateSnapshot]
+    [canEdit, manualEpicId, manualTaskDescription, manualTaskTitle, snapshot, teamId, updateSnapshot]
   );
 
   const handleImportJira = useCallback(async () => {
@@ -1779,6 +1788,14 @@ export function PlannerApp() {
                     disabled={!canEdit}
                     placeholder="Nazwa taska"
                   />
+                  <textarea
+                    value={manualTaskDescription}
+                    onChange={(event) => setManualTaskDescription(event.target.value)}
+                    disabled={!canEdit}
+                    placeholder="Krótki opis pod kafelkiem"
+                    maxLength={240}
+                    rows={2}
+                  />
                   <select
                     value={manualEpicId}
                     onChange={(event) => setManualEpicId(event.target.value)}
@@ -1801,6 +1818,7 @@ export function PlannerApp() {
                       onClick={() => {
                         setTaskComposerOpen(false);
                         setManualTaskTitle('');
+                        setManualTaskDescription('');
                       }}
                     >
                       Anuluj
@@ -1812,7 +1830,7 @@ export function PlannerApp() {
                 {backlogTasks.map((task) => {
                   const epic = epicById.get(task.epicId);
                   const taskReady = !isOptimisticId(task.id);
-                  const taskDescription = task.status && task.status !== 'todo' ? task.status : '';
+                  const description = taskDescription(task);
                   return (
                     <div
                       key={task.id}
@@ -1836,7 +1854,7 @@ export function PlannerApp() {
                       <span className="task-dot" />
                       <div className="task-title">{task.title}</div>
                       <div className="task-meta">
-                        {taskReady ? taskDescription || `${(task.jiraKey ?? task.id).toUpperCase()} · 1h · ${epic?.name ?? 'epic'}` : 'zapisywanie...'}
+                        {taskReady ? description || `1h · ${epic?.name ?? 'epic'}` : 'zapisywanie...'}
                       </div>
                     </div>
                   );
@@ -1939,8 +1957,8 @@ export function PlannerApp() {
                           const days = assignment.durationDays || 1;
                           const widthStyle = days > 1 ? `calc(${days * 100}% - 8px)` : undefined;
                           const title = task.title;
-                          const meta = `${task.jiraKey ?? task.id} · ${pad2(assignment.startHour)}:00-${pad2(assignment.startHour + assignment.durationHours)}:00${days > 1 ? ` · ${days} dni` : ''}`;
-                          const taskDescription = task.status && task.status !== 'todo' ? task.status : '';
+                          const meta = `${pad2(assignment.startHour)}:00-${pad2(assignment.startHour + assignment.durationHours)}:00${days > 1 ? ` · ${days} dni` : ''}`;
+                          const description = taskDescription(task);
                           const assignmentReady = !isOptimisticId(assignment.id);
 
                           return (
@@ -2018,7 +2036,7 @@ export function PlannerApp() {
                                 </button>
                               )}
                               <div className="task-title">{title}</div>
-                              <div className="task-meta">{taskDescription || meta}</div>
+                              <div className="task-meta">{description || meta}</div>
                               {canEdit && assignmentReady && (
                                 <>
                                   <div

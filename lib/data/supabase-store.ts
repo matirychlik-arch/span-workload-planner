@@ -852,6 +852,7 @@ export class SupabaseStore implements DataStore {
     teamId: string;
     userId: string;
     title: string;
+    description?: string;
     epicId?: string;
   }): Promise<PlannerSnapshot> {
     await this.ensureUserWorkspaceAndSeed(params.userId);
@@ -910,7 +911,7 @@ export class SupabaseStore implements DataStore {
       title,
       url: null,
       epic_id: epicId,
-      status: 'todo',
+      status: params.description?.trim() || 'todo',
       assignee_id: null
     };
 

@@ -581,8 +581,14 @@ h2 {
 }
 
 .task-composer input,
+.task-composer textarea,
 .task-composer select {
   width: 100%;
+}
+
+.task-composer textarea {
+  min-height: 58px;
+  resize: vertical;
 }
 
 .composer-actions {

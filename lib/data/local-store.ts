@@ -242,6 +242,7 @@ export class LocalStore implements DataStore {
     teamId: string;
     userId: string;
     title: string;
+    description?: string;
     epicId?: string;
   }): Promise<PlannerSnapshot> {
     const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
@@ -272,7 +273,7 @@ export class LocalStore implements DataStore {
       source: 'manual',
       title,
       epicId,
-      status: 'todo'
+      status: params.description?.trim() || 'todo'
     });
 
     return snapshotForTeam(this.state, params.teamId, params.userId);

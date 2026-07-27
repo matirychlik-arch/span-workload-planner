@@ -6,6 +6,7 @@ import { resolveCurrentUserId } from '@/lib/auth/session';
 const bodySchema = z.object({
   teamId: z.string().min(1),
   title: z.string().trim().min(1).max(160),
+  description: z.string().trim().max(240).optional(),
   epicId: z.string().min(1).optional()
 });
 

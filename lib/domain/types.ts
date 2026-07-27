@@ -143,6 +143,7 @@ export interface DataStore {
     teamId: string;
     userId: string;
     title: string;
+    description?: string;
     epicId?: string;
   }): Promise<PlannerSnapshot>;
   updateTeamSettings(params: {
