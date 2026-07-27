@@ -181,8 +181,8 @@ export async function listPlannerBackups(client: SupabaseClient, workspaceId: st
       files.push({
         path: `${folderPath}/${file.name}`,
         name: `${folder.name} ${file.name.replace('.json', '')}`,
-        createdAt: file.created_at,
-        updatedAt: file.updated_at,
+        createdAt: file.created_at ?? undefined,
+        updatedAt: file.updated_at ?? undefined,
         size: file.metadata?.size
       });
     }
