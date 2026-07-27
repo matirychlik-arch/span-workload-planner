@@ -47,6 +47,18 @@ type TeamMemberRow = {
   role: UserRole;
 };
 
+type WorkspaceInviteRow = {
+  id: string;
+  workspace_id: string;
+  team_id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  employee_name: string | null;
+  tint_color: string | null;
+  active: boolean;
+};
+
 type EmployeeRow = {
   id: string;
   workspace_id: string;
@@ -380,6 +392,86 @@ export class SupabaseStore implements DataStore {
     }
   }
 
+  private async inviteForEmail(email: string): Promise<WorkspaceInviteRow | null> {
+    const { data, error } = await this.client
+      .from('workspace_invites')
+      .select('id, workspace_id, team_id, email, name, role, employee_name, tint_color, active')
+      .eq('active', true)
+      .ilike('email', email)
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return data ? (data as WorkspaceInviteRow) : null;
+  }
+
+  private async attachUserToTeamEmployee(
+    workspaceId: string,
+    teamId: string,
+    userId: string,
+    employeeName: string,
+    tintColor?: string | null
+  ): Promise<void> {
+    const { data: employee, error } = await this.client
+      .from('employees')
+      .select('id')
+      .eq('workspace_id', workspaceId)
+      .eq('team_id', teamId)
+      .eq('active', true)
+      .ilike('name', employeeName)
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+
+    if (!employee?.id) {
+      const { error: insertError } = await this.client.from('employees').insert({
+        id: randomUUID(),
+        workspace_id: workspaceId,
+        team_id: teamId,
+        user_id: userId,
+        name: employeeName,
+        active: true,
+        tint_color: tintColor ?? '#EEF3FF'
+      });
+      if (insertError) throw new Error(insertError.message);
+      return;
+    }
+
+    const updatePayload: { user_id: string; tint_color?: string } = { user_id: userId };
+    if (tintColor) updatePayload.tint_color = tintColor;
+    const { error: updateError } = await this.client
+      .from('employees')
+      .update(updatePayload)
+      .eq('id', String(employee.id));
+    if (updateError) throw new Error(updateError.message);
+  }
+
+  private async attachInvitedUser(userId: string, profile: { email: string; name: string; googleSub: string | null }): Promise<boolean> {
+    const invite = await this.inviteForEmail(profile.email);
+    if (!invite) return false;
+
+    const userRow: AppUserRow = {
+      id: userId,
+      workspace_id: invite.workspace_id,
+      email: profile.email,
+      name: invite.name || profile.name,
+      google_sub: profile.googleSub,
+      slack_user_id: null
+    };
+    const { error: userError } = await this.client.from('app_users').upsert(userRow, { onConflict: 'id' });
+    if (userError) throw new Error(userError.message);
+
+    await this.removeUserMembershipsOutsideWorkspace(userId, invite.workspace_id);
+    await this.ensureMember(invite.team_id, userId, invite.role);
+
+    if (invite.employee_name) {
+      await this.attachUserToTeamEmployee(invite.workspace_id, invite.team_id, userId, invite.employee_name, invite.tint_color);
+    } else {
+      await this.detachUserFromWorkspaceEmployees(invite.workspace_id, userId);
+    }
+
+    return true;
+  }
+
   private async ensureMember(teamId: string, userId: string, role: UserRole): Promise<void> {
     const { data: member, error } = await this.client
       .from('team_members')
@@ -468,12 +560,13 @@ export class SupabaseStore implements DataStore {
     if (existingUser) {
       if (isOwnerEmail(profile.email)) {
         await this.detachUserFromWorkspaceEmployees(String(existingUser.workspace_id), userId);
-      } else {
+      } else if (!(await this.attachInvitedUser(userId, profile))) {
         await this.attachMateuszWorkUser(userId, profile);
       }
       return;
     }
 
+    if (await this.attachInvitedUser(userId, profile)) return;
     if (await this.attachMateuszWorkUser(userId, profile)) return;
 
     const workspaceId = randomUUID();
@@ -1666,12 +1759,13 @@ export class SupabaseStore implements DataStore {
     const { team, role } = await this.teamContext(params.teamId, params.userId);
     assertCanManagePeople(role);
 
-    const [workspaceResult, teamsResult, usersResult, membersResult, employeesResult, epicsResult, tasksResult, assignmentsResult] =
+    const [workspaceResult, teamsResult, usersResult, membersResult, invitesResult, employeesResult, epicsResult, tasksResult, assignmentsResult] =
       await Promise.all([
         this.client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', team.workspaceId).single(),
         this.client.from('teams').select('id, workspace_id, name, pm_user_id, edit_mode').eq('workspace_id', team.workspaceId),
         this.client.from('app_users').select('id, workspace_id, email, name, google_sub, slack_user_id').eq('workspace_id', team.workspaceId),
         this.client.from('team_members').select('team_id, user_id, role'),
+        this.client.from('workspace_invites').select('id, workspace_id, team_id, email, name, role, employee_name, tint_color, active').eq('workspace_id', team.workspaceId),
         this.client.from('employees').select('id, workspace_id, team_id, user_id, name, active, tint_color').eq('workspace_id', team.workspaceId),
         this.client.from('epics').select('id, workspace_id, team_id, jira_key, name, color').eq('workspace_id', team.workspaceId),
         this.client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id').eq('workspace_id', team.workspaceId),
@@ -1682,6 +1776,7 @@ export class SupabaseStore implements DataStore {
     if (teamsResult.error) throw new Error(teamsResult.error.message);
     if (usersResult.error) throw new Error(usersResult.error.message);
     if (membersResult.error) throw new Error(membersResult.error.message);
+    if (invitesResult.error) throw new Error(invitesResult.error.message);
     if (employeesResult.error) throw new Error(employeesResult.error.message);
     if (epicsResult.error) throw new Error(epicsResult.error.message);
     if (tasksResult.error) throw new Error(tasksResult.error.message);
@@ -1694,6 +1789,17 @@ export class SupabaseStore implements DataStore {
       workspace: toWorkspace(workspaceResult.data as WorkspaceRow),
       teams: (teamsResult.data as TeamRow[]).map(toTeam),
       members: (membersResult.data as TeamMemberRow[]).filter((member) => teamIds.has(member.team_id)).map(toTeamMember),
+      invites: (invitesResult.data as WorkspaceInviteRow[]).filter((invite) => teamIds.has(invite.team_id)).map((invite) => ({
+        id: invite.id,
+        workspaceId: invite.workspace_id,
+        teamId: invite.team_id,
+        email: invite.email,
+        name: invite.name,
+        role: invite.role,
+        employeeName: invite.employee_name ?? undefined,
+        tintColor: invite.tint_color ?? undefined,
+        active: invite.active
+      })),
       users: (usersResult.data as AppUserRow[]).map(toUser),
       employees: (employeesResult.data as EmployeeRow[]).map(toEmployee),
       epics: (epicsResult.data as EpicRow[]).map(toEpic),
@@ -1776,6 +1882,24 @@ export class SupabaseStore implements DataStore {
     }
     if (memberRows.length) {
       const { error } = await this.client.from('team_members').insert(memberRows);
+      if (error) throw new Error(error.message);
+    }
+
+    const inviteRows: WorkspaceInviteRow[] = (params.backup.invites ?? [])
+      .filter((invite) => restoredTeamIds.has(invite.teamId))
+      .map((invite) => ({
+        id: invite.id,
+        workspace_id: team.workspaceId,
+        team_id: invite.teamId,
+        email: invite.email,
+        name: invite.name,
+        role: invite.role,
+        employee_name: invite.employeeName ?? null,
+        tint_color: invite.tintColor ?? null,
+        active: invite.active
+      }));
+    if (inviteRows.length) {
+      const { error } = await this.client.from('workspace_invites').insert(inviteRows);
       if (error) throw new Error(error.message);
     }
 

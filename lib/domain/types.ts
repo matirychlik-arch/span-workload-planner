@@ -32,6 +32,18 @@ export interface TeamMember {
   role: UserRole;
 }
 
+export interface WorkspaceInvite {
+  id: string;
+  workspaceId: string;
+  teamId: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  employeeName?: string;
+  tintColor?: string;
+  active: boolean;
+}
+
 export interface Employee {
   id: string;
   workspaceId: string;
@@ -260,6 +272,7 @@ export interface PlannerBackup {
   workspace: Workspace;
   teams: Team[];
   members: TeamMember[];
+  invites?: WorkspaceInvite[];
   users: AppUser[];
   employees: Employee[];
   epics: Epic[];

@@ -16,6 +16,7 @@ begin
   delete from assignments where workspace_id = target_workspace_id;
   delete from tasks where workspace_id = target_workspace_id;
   delete from employees where workspace_id = target_workspace_id;
+  delete from workspace_invites where workspace_id = target_workspace_id;
   delete from team_members
    where team_id in (select id from teams where workspace_id = target_workspace_id);
   delete from teams where workspace_id = target_workspace_id;

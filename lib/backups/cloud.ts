@@ -42,6 +42,18 @@ type TeamMemberRow = {
   role: 'admin' | 'pm' | 'employee';
 };
 
+type WorkspaceInviteRow = {
+  id: string;
+  workspace_id: string;
+  team_id: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'pm' | 'employee';
+  employee_name: string | null;
+  tint_color: string | null;
+  active: boolean;
+};
+
 type EmployeeRow = {
   id: string;
   workspace_id: string;
@@ -190,10 +202,11 @@ export async function downloadPlannerBackup(client: SupabaseClient, path: string
 }
 
 export async function exportWorkspaceBackup(client: SupabaseClient, workspaceId: string): Promise<PlannerBackup | null> {
-  const [workspaceResult, teamsResult, usersResult, employeesResult, epicsResult, tasksResult, assignmentsResult] = await Promise.all([
+  const [workspaceResult, teamsResult, usersResult, invitesResult, employeesResult, epicsResult, tasksResult, assignmentsResult] = await Promise.all([
     client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', workspaceId).single(),
     client.from('teams').select('id, workspace_id, name, pm_user_id, edit_mode').eq('workspace_id', workspaceId),
     client.from('app_users').select('id, workspace_id, email, name, google_sub, slack_user_id').eq('workspace_id', workspaceId),
+    client.from('workspace_invites').select('id, workspace_id, team_id, email, name, role, employee_name, tint_color, active').eq('workspace_id', workspaceId),
     client.from('employees').select('id, workspace_id, team_id, user_id, name, active, tint_color').eq('workspace_id', workspaceId),
     client.from('epics').select('id, workspace_id, team_id, jira_key, name, color').eq('workspace_id', workspaceId),
     client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id').eq('workspace_id', workspaceId),
@@ -203,6 +216,7 @@ export async function exportWorkspaceBackup(client: SupabaseClient, workspaceId:
   if (workspaceResult.error) throw new Error(workspaceResult.error.message);
   if (teamsResult.error) throw new Error(teamsResult.error.message);
   if (usersResult.error) throw new Error(usersResult.error.message);
+  if (invitesResult.error) throw new Error(invitesResult.error.message);
   if (employeesResult.error) throw new Error(employeesResult.error.message);
   if (epicsResult.error) throw new Error(epicsResult.error.message);
   if (tasksResult.error) throw new Error(tasksResult.error.message);
@@ -241,6 +255,19 @@ export async function exportWorkspaceBackup(client: SupabaseClient, workspaceId:
       userId: member.user_id,
       role: member.role
     })),
+    invites: ((invitesResult.data as WorkspaceInviteRow[]) ?? [])
+      .filter((invite) => teamIds.has(invite.team_id))
+      .map((invite) => ({
+        id: invite.id,
+        workspaceId: invite.workspace_id,
+        teamId: invite.team_id,
+        email: invite.email,
+        name: invite.name,
+        role: invite.role,
+        employeeName: invite.employee_name ?? undefined,
+        tintColor: invite.tint_color ?? undefined,
+        active: invite.active
+      })),
     users: ((usersResult.data as AppUserRow[]) ?? []).map((user) => ({
       id: user.id,
       email: user.email,
