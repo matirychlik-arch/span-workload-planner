@@ -186,6 +186,12 @@ function taskDescription(task: Task): string {
   return description && description.toLowerCase() !== 'todo' ? description : '';
 }
 
+function isTextInputTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName.toLowerCase();
+  return target.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select';
+}
+
 export function PlannerApp() {
   const router = useRouter();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
@@ -767,9 +773,14 @@ export function PlannerApp() {
   );
 
   const handleDelete = useCallback(
-    async (assignmentId: string) => {
+    async (assignmentId?: string) => {
       if (!teamId || !canEdit) return;
-      const toDelete = selectedIds.has(assignmentId) && selectedIds.size > 0 ? Array.from(selectedIds) : [assignmentId];
+      const toDelete = assignmentId
+        ? selectedIds.has(assignmentId) && selectedIds.size > 0
+          ? Array.from(selectedIds)
+          : [assignmentId]
+        : Array.from(selectedIds);
+      if (!toDelete.length) return;
       if (toDelete.some(isOptimisticId)) {
         setError(PENDING_ASSIGNMENT_MESSAGE);
         return;
@@ -792,6 +803,47 @@ export function PlannerApp() {
       setSelectedIds(new Set());
     },
     [canEdit, queuePlannerCommit, selectedIds, snapshot, teamId, updateSnapshot]
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      if (isTextInputTarget(event.target)) return;
+      if (!selectedIds.size || !canEdit) return;
+      event.preventDefault();
+      void handleDelete();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canEdit, handleDelete, selectedIds.size]);
+
+  const handleDeleteTasks = useCallback(
+    (taskIds: string[]) => {
+      if (!teamId || !canEdit || !snapshot) return;
+      const readyTaskIds = taskIds.filter((taskId) => !isOptimisticId(taskId));
+      if (!readyTaskIds.length) {
+        setError(PENDING_ASSIGNMENT_MESSAGE);
+        return;
+      }
+
+      const removeSet = new Set(readyTaskIds);
+      updateSnapshot({
+        ...snapshot,
+        tasks: snapshot.tasks.filter((task) => !removeSet.has(task.id)),
+        assignments: resolveSticky(snapshot.assignments.filter((assignment) => !removeSet.has(assignment.taskId)))
+      });
+      queuePlannerCommit(
+        () =>
+          api<PlannerSnapshot>('/api/tasks/delete', {
+            method: 'POST',
+            body: JSON.stringify({ teamId, taskIds: readyTaskIds })
+          }),
+        'Błąd podczas usuwania tasków.'
+      );
+      setSelectedIds(new Set());
+    },
+    [canEdit, queuePlannerCommit, snapshot, teamId, updateSnapshot]
   );
 
   const handleAssignmentEpicChange = useCallback(
@@ -1813,14 +1865,24 @@ export function PlannerApp() {
                   <h2>Taski do zaplanowania</h2>
                   <div className="hint">Taski z Jiry i ręczne. Kolor = epic.</div>
                 </div>
-                <button
-                  className="secondary collapse-btn"
-                  onClick={() => setSidebarCollapsed(true)}
-                  aria-label="Zwiń backlog"
-                  title="Zwiń backlog"
-                >
-                  ‹
-                </button>
+                <div className="side-actions">
+                  <button
+                    className="secondary clear-backlog-btn"
+                    onClick={() => handleDeleteTasks(backlogTasks.map((task) => task.id))}
+                    disabled={!canEdit || backlogTasks.length === 0}
+                    title="Usuń wszystkie taski z backlogu"
+                  >
+                    Wyczyść
+                  </button>
+                  <button
+                    className="secondary collapse-btn"
+                    onClick={() => setSidebarCollapsed(true)}
+                    aria-label="Zwiń backlog"
+                    title="Zwiń backlog"
+                  >
+                    ‹
+                  </button>
+                </div>
               </div>
               {taskComposerOpen && (
                 <form className="task-composer" onSubmit={handleCreateTask}>
@@ -1894,6 +1956,19 @@ export function PlannerApp() {
                       }}
                       style={{ '--task-color': epic?.color ?? '#4A7FF8' } as CSSProperties}
                     >
+                      {canEdit && taskReady && (
+                        <button
+                          className="delete"
+                          title="Usuń z backlogu"
+                          aria-label={`Usuń ${task.title} z backlogu`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleDeleteTasks([task.id]);
+                          }}
+                        >
+                          ×
+                        </button>
+                      )}
                       <span className="task-dot" />
                       <div className="task-title">{task.title}</div>
                       <div className="task-meta">

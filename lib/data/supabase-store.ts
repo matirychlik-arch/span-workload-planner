@@ -930,6 +930,58 @@ export class SupabaseStore implements DataStore {
     return this.snapshot(params.teamId, params.userId);
   }
 
+  async deleteTasks(params: {
+    teamId: string;
+    userId: string;
+    taskIds: string[];
+  }): Promise<PlannerSnapshot> {
+    await this.ensureUserWorkspaceAndSeed(params.userId);
+    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+
+    const { data: tasks, error: tasksError } = await this.client
+      .from('tasks')
+      .select('id')
+      .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
+      .in('id', params.taskIds);
+    if (tasksError) throw new Error(tasksError.message);
+
+    const taskIds = (tasks ?? []).map((task) => String(task.id));
+    if (!taskIds.length) return this.snapshot(params.teamId, params.userId);
+
+    const { data: assignments, error: assignmentsError } = await this.client
+      .from('assignments')
+      .select('id')
+      .eq('team_id', params.teamId)
+      .in('task_id', taskIds);
+    if (assignmentsError) throw new Error(assignmentsError.message);
+
+    const assignmentIds = (assignments ?? []).map((assignment) => String(assignment.id));
+    if (assignmentIds.length) {
+      await this.assertEmployeeOwnScope(params.teamId, params.userId, role, assignmentIds);
+      const { error: deleteAssignmentsError } = await this.client
+        .from('assignments')
+        .delete()
+        .eq('team_id', params.teamId)
+        .in('id', assignmentIds);
+      if (deleteAssignmentsError) throw new Error(deleteAssignmentsError.message);
+    }
+
+    const { error: deleteTasksError } = await this.client
+      .from('tasks')
+      .delete()
+      .eq('workspace_id', team.workspaceId)
+      .eq('team_id', params.teamId)
+      .in('id', taskIds);
+    if (deleteTasksError) throw new Error(deleteTasksError.message);
+
+    const remaining = await this.loadAssignmentsForTeam(params.teamId);
+    const resolved = resolveSticky(remaining);
+    await this.persistResolvedAssignments(remaining, resolved);
+    return this.snapshot(params.teamId, params.userId);
+  }
+
   async updateTeamSettings(params: {
     teamId: string;
     userId: string;

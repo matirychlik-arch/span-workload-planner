@@ -539,6 +539,19 @@ button.secondary {
   gap: 8px;
 }
 
+.side-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.clear-backlog-btn {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 11px;
+  font-size: 12px;
+}
+
 .collapse-btn {
   width: 34px;
   min-width: 34px;

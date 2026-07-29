@@ -288,6 +288,32 @@ export class LocalStore implements DataStore {
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
+  async deleteTasks(params: {
+    teamId: string;
+    userId: string;
+    taskIds: string[];
+  }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+
+    const removeSet = new Set(params.taskIds);
+    if (role === 'employee') {
+      const assignmentIds = this.state.assignments
+        .filter((assignment) => assignment.teamId === params.teamId && removeSet.has(assignment.taskId))
+        .map((assignment) => assignment.id);
+      assertEmployeeOwnScope(this.state, params.teamId, params.userId, role, assignmentIds);
+    }
+
+    this.state.assignments = this.state.assignments.filter(
+      (assignment) => !(assignment.teamId === params.teamId && removeSet.has(assignment.taskId))
+    );
+    this.state.tasks = this.state.tasks.filter(
+      (task) => !(task.workspaceId === team.workspaceId && (!task.teamId || task.teamId === params.teamId) && removeSet.has(task.id))
+    );
+    applyStickyForTeam(this.state, params.teamId);
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
   async updateTeamSettings(params: {
     teamId: string;
     userId: string;

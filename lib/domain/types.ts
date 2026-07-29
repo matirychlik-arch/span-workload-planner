@@ -146,6 +146,11 @@ export interface DataStore {
     description?: string;
     epicId?: string;
   }): Promise<PlannerSnapshot>;
+  deleteTasks(params: {
+    teamId: string;
+    userId: string;
+    taskIds: string[];
+  }): Promise<PlannerSnapshot>;
   updateTeamSettings(params: {
     teamId: string;
     userId: string;
