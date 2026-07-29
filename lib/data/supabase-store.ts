@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
 import { resolveSticky } from '@/lib/domain/sticky';
-import { Assignment, AppUser, DataStore, Employee, Epic, PlannerBackup, PlannerSnapshot, Task, Team, TeamEditMode, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
+import { Assignment, AppUser, DataStore, Employee, Epic, ExcelImportResult, PlannerBackup, PlannerSnapshot, Task, Team, TeamEditMode, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
 import {
@@ -91,6 +91,8 @@ type TaskRow = {
   status: string | null;
   assignee_id: string | null;
 };
+
+const EXCEL_IMPORT_START_HOUR = 8;
 
 type AssignmentRow = {
   id: string;
@@ -249,6 +251,13 @@ function importKey(value: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+function employeeImportKey(value: string): string {
+  const token = importKey(value).split(' ')[0] ?? '';
+  if (token === 'mati' || token === 'mateusz') return 'mateusz';
+  if (token === 'pati' || token === 'patrycja') return 'patrycja';
+  return token;
 }
 
 function assignmentChanged(previous: Assignment, next: Assignment): boolean {
@@ -1610,7 +1619,7 @@ export class SupabaseStore implements DataStore {
     userId: string;
     fileName: string;
     data: ArrayBuffer;
-  }): Promise<{ addedTasks: number; addedAssignments: number; skippedRows: number; skippedEmployees: string[] }> {
+  }): Promise<ExcelImportResult> {
     await this.ensureUserWorkspaceAndSeed(params.userId);
     const { team, role } = await this.teamContext(params.teamId, params.userId);
     if (role === 'employee') {
@@ -1642,35 +1651,31 @@ export class SupabaseStore implements DataStore {
 
     const employees = (employeesResult.data as EmployeeRow[]).map(toEmployee);
     const entries = parseExcelWorkload(params.data, employees.map((employee) => employee.name));
-    const employeeByImportName = new Map(employees.map((employee) => [importKey(employee.name).split(' ')[0], employee]));
+    const importedDates = entries.map((entry) => entry.date).sort();
+    const employeeByImportName = new Map(employees.map((employee) => [employeeImportKey(employee.name), employee]));
     const epicByName = new Map((epicsResult.data as EpicRow[]).map(toEpic).map((epic) => [importKey(epic.name), epic]));
     const taskByTitle = new Map((tasksResult.data as TaskRow[]).map(toTask).map((task) => [importKey(task.title), task]));
     const taskTitleById = new Map((tasksResult.data as TaskRow[]).map(toTask).map((task) => [task.id, task.title]));
 
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
-    const existingAssignments = new Set(
+    const existingAssignmentByKey = new Map(
       allAssignments.map((assignment) => {
         const title = taskTitleById.get(assignment.taskId) ?? '';
-        return `${assignment.employeeId}|${assignment.startDate}|${importKey(title)}`;
+        return [`${assignment.employeeId}|${assignment.startDate}|${importKey(title)}`, assignment] as const;
       })
     );
     const nextStartByEmployeeDate = new Map<string, number>();
-    for (const assignment of allAssignments) {
-      const key = `${assignment.employeeId}|${assignment.startDate}`;
-      nextStartByEmployeeDate.set(
-        key,
-        Math.max(nextStartByEmployeeDate.get(key) ?? DAY_START_HOUR, assignment.startHour + assignment.durationHours)
-      );
-    }
 
     let addedTasks = 0;
     let addedAssignments = 0;
+    let updatedAssignments = 0;
     let skippedRows = 0;
     const skippedEmployees = new Set<string>();
     const newAssignments: Assignment[] = [];
+    const updatedAssignmentById = new Map<string, Assignment>();
 
     for (const entry of entries) {
-      const employee = employeeByImportName.get(importKey(entry.employeeName).split(' ')[0]);
+      const employee = employeeByImportName.get(employeeImportKey(entry.employeeName));
       if (!employee) {
         skippedEmployees.add(entry.employeeName);
         skippedRows += 1;
@@ -1678,10 +1683,6 @@ export class SupabaseStore implements DataStore {
       }
 
       const duplicateKey = `${employee.id}|${entry.date}|${importKey(entry.title)}`;
-      if (existingAssignments.has(duplicateKey)) {
-        skippedRows += 1;
-        continue;
-      }
 
       const epicName = inferEpicName(entry.title);
       let epic = epicByName.get(importKey(epicName));
@@ -1724,35 +1725,58 @@ export class SupabaseStore implements DataStore {
       }
 
       const startKey = `${employee.id}|${entry.date}`;
-      const startHour = nextStartByEmployeeDate.get(startKey) ?? DAY_START_HOUR;
+      const startHour = nextStartByEmployeeDate.get(startKey) ?? EXCEL_IMPORT_START_HOUR;
       if (startHour >= DAY_END_HOUR) {
         skippedRows += 1;
         continue;
       }
       const durationHours = clamp(entry.durationHours, 1, DAY_END_HOUR - startHour);
       const now = new Date().toISOString();
-      newAssignments.push({
-        id: randomUUID(),
-        workspaceId: team.workspaceId,
-        teamId: params.teamId,
-        taskId: task.id,
-        employeeId: employee.id,
-        startDate: entry.date,
-        startHour,
-        desiredStartHour: startHour,
-        durationHours,
-        durationDays: 1,
-        version: 1,
-        updatedAt: now
-      });
-      existingAssignments.add(duplicateKey);
+      const existingAssignment = existingAssignmentByKey.get(duplicateKey);
+      if (existingAssignment) {
+        updatedAssignmentById.set(existingAssignment.id, {
+          ...existingAssignment,
+          taskId: task.id,
+          employeeId: employee.id,
+          startDate: entry.date,
+          startHour,
+          desiredStartHour: startHour,
+          durationHours,
+          durationDays: 1
+        });
+        updatedAssignments += 1;
+      } else {
+        newAssignments.push({
+          id: randomUUID(),
+          workspaceId: team.workspaceId,
+          teamId: params.teamId,
+          taskId: task.id,
+          employeeId: employee.id,
+          startDate: entry.date,
+          startHour,
+          desiredStartHour: startHour,
+          durationHours,
+          durationDays: 1,
+          version: 1,
+          updatedAt: now
+        });
+        addedAssignments += 1;
+      }
       nextStartByEmployeeDate.set(startKey, startHour + durationHours);
-      addedAssignments += 1;
     }
 
-    const resolved = resolveSticky([...allAssignments, ...newAssignments]);
+    const baseAssignments = allAssignments.map((assignment) => updatedAssignmentById.get(assignment.id) ?? assignment);
+    const resolved = resolveSticky([...baseAssignments, ...newAssignments]);
     await this.persistResolvedAssignments(allAssignments, resolved);
-    return { addedTasks, addedAssignments, skippedRows, skippedEmployees: Array.from(skippedEmployees) };
+    return {
+      addedTasks,
+      addedAssignments,
+      updatedAssignments,
+      skippedRows,
+      skippedEmployees: Array.from(skippedEmployees),
+      firstDate: importedDates[0],
+      lastDate: importedDates[importedDates.length - 1]
+    };
   }
 
   async exportPlannerBackup(params: { teamId: string; userId: string }): Promise<PlannerBackup> {

@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { seedAssignments, seedEmployees, seedEpics, seedTasks, seedTeamMembers, seedTeams, seedUsers, seedWorkspace } from '@/lib/data/mock-seed';
 import { resolveSticky } from '@/lib/domain/sticky';
-import { Assignment, DataStore, PlannerBackup, PlannerSnapshot, Team, TeamEditMode, TeamMember, UserRole } from '@/lib/domain/types';
+import { Assignment, DataStore, ExcelImportResult, PlannerBackup, PlannerSnapshot, Team, TeamEditMode, TeamMember, UserRole } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
 import { assertCanGrantRole, assertCanManagePeople, isOwnerEmail } from '@/lib/security/roles';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
+
+const EXCEL_IMPORT_START_HOUR = 8;
 
 type LocalState = {
   workspace: typeof seedWorkspace;
@@ -50,6 +52,13 @@ function importKey(value: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+function employeeImportKey(value: string): string {
+  const token = importKey(value).split(' ')[0] ?? '';
+  if (token === 'mati' || token === 'mateusz') return 'mateusz';
+  if (token === 'pati' || token === 'patrycja') return 'patrycja';
+  return token;
 }
 
 function roleTeamAndMembers(state: LocalState, teamId: string, userId: string): { team: Team; members: TeamMember[]; role: UserRole } {
@@ -794,7 +803,7 @@ export class LocalStore implements DataStore {
     userId: string;
     fileName: string;
     data: ArrayBuffer;
-  }): Promise<{ addedTasks: number; addedAssignments: number; skippedRows: number; skippedEmployees: string[] }> {
+  }): Promise<ExcelImportResult> {
     const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
     if (role === 'employee') {
       throw new Error('Import z Excela jest dostępny tylko dla PM/admin.');
@@ -804,7 +813,8 @@ export class LocalStore implements DataStore {
     const { inferEpicName, parseExcelWorkload } = await import('@/lib/integrations/excel-workload');
     const employees = this.state.employees.filter((employee) => employee.teamId === params.teamId && employee.active);
     const entries = parseExcelWorkload(params.data, employees.map((employee) => employee.name));
-    const employeeByImportName = new Map(employees.map((employee) => [importKey(employee.name).split(' ')[0], employee]));
+    const importedDates = entries.map((entry) => entry.date).sort();
+    const employeeByImportName = new Map(employees.map((employee) => [employeeImportKey(employee.name), employee]));
     const epicByName = new Map(
       this.state.epics
         .filter((epic) => epic.workspaceId === team.workspaceId)
@@ -815,30 +825,24 @@ export class LocalStore implements DataStore {
         .filter((task) => task.workspaceId === team.workspaceId)
         .map((task) => [importKey(task.title), task])
     );
-    const existingAssignments = new Set(
+    const existingAssignmentByKey = new Map(
       this.state.assignments
         .filter((assignment) => assignment.teamId === params.teamId)
         .map((assignment) => {
           const task = this.state.tasks.find((item) => item.id === assignment.taskId);
-          return `${assignment.employeeId}|${assignment.startDate}|${importKey(task?.title ?? '')}`;
+          return [`${assignment.employeeId}|${assignment.startDate}|${importKey(task?.title ?? '')}`, assignment] as const;
         })
     );
     const nextStartByEmployeeDate = new Map<string, number>();
-    for (const assignment of this.state.assignments.filter((item) => item.teamId === params.teamId)) {
-      const key = `${assignment.employeeId}|${assignment.startDate}`;
-      nextStartByEmployeeDate.set(
-        key,
-        Math.max(nextStartByEmployeeDate.get(key) ?? DAY_START_HOUR, assignment.startHour + assignment.durationHours)
-      );
-    }
 
     let addedTasks = 0;
     let addedAssignments = 0;
+    let updatedAssignments = 0;
     let skippedRows = 0;
     const skippedEmployees = new Set<string>();
 
     for (const entry of entries) {
-      const employee = employeeByImportName.get(importKey(entry.employeeName).split(' ')[0]);
+      const employee = employeeByImportName.get(employeeImportKey(entry.employeeName));
       if (!employee) {
         skippedEmployees.add(entry.employeeName);
         skippedRows += 1;
@@ -846,10 +850,6 @@ export class LocalStore implements DataStore {
       }
 
       const duplicateKey = `${employee.id}|${entry.date}|${importKey(entry.title)}`;
-      if (existingAssignments.has(duplicateKey)) {
-        skippedRows += 1;
-        continue;
-      }
 
       const epicName = inferEpicName(entry.title);
       let epic = epicByName.get(importKey(epicName));
@@ -882,34 +882,56 @@ export class LocalStore implements DataStore {
       }
 
       const startKey = `${employee.id}|${entry.date}`;
-      const startHour = nextStartByEmployeeDate.get(startKey) ?? DAY_START_HOUR;
+      const startHour = nextStartByEmployeeDate.get(startKey) ?? EXCEL_IMPORT_START_HOUR;
       if (startHour >= DAY_END_HOUR) {
         skippedRows += 1;
         continue;
       }
       const durationHours = clamp(entry.durationHours, 1, DAY_END_HOUR - startHour);
       const now = new Date().toISOString();
-      this.state.assignments.push({
-        id: `assignment-${randomUUID()}`,
-        workspaceId: team.workspaceId,
-        teamId: params.teamId,
-        taskId: task.id,
-        employeeId: employee.id,
-        startDate: entry.date,
-        startHour,
-        desiredStartHour: startHour,
-        durationHours,
-        durationDays: 1,
-        version: 1,
-        updatedAt: now
-      });
-      existingAssignments.add(duplicateKey);
+      const existingAssignment = existingAssignmentByKey.get(duplicateKey);
+      if (existingAssignment) {
+        Object.assign(existingAssignment, {
+          taskId: task.id,
+          employeeId: employee.id,
+          startDate: entry.date,
+          startHour,
+          desiredStartHour: startHour,
+          durationHours,
+          durationDays: 1,
+          updatedAt: now
+        });
+        updatedAssignments += 1;
+      } else {
+        this.state.assignments.push({
+          id: `assignment-${randomUUID()}`,
+          workspaceId: team.workspaceId,
+          teamId: params.teamId,
+          taskId: task.id,
+          employeeId: employee.id,
+          startDate: entry.date,
+          startHour,
+          desiredStartHour: startHour,
+          durationHours,
+          durationDays: 1,
+          version: 1,
+          updatedAt: now
+        });
+        addedAssignments += 1;
+      }
       nextStartByEmployeeDate.set(startKey, startHour + durationHours);
-      addedAssignments += 1;
     }
 
     applyStickyForTeam(this.state, params.teamId);
-    return { addedTasks, addedAssignments, skippedRows, skippedEmployees: Array.from(skippedEmployees) };
+    return {
+      addedTasks,
+      addedAssignments,
+      updatedAssignments,
+      skippedRows,
+      skippedEmployees: Array.from(skippedEmployees),
+      firstDate: importedDates[0],
+      lastDate: importedDates[importedDates.length - 1]
+    };
   }
 
   async exportPlannerBackup(params: { teamId: string; userId: string }): Promise<PlannerBackup> {

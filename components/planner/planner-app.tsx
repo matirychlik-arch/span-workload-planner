@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { CSSProperties, ChangeEvent, FormEvent } from 'react';
-import type { Assignment, Epic, PlannerSnapshot, Task, TeamEditMode, UserRole } from '@/lib/domain/types';
+import type { Assignment, Epic, ExcelImportResult, PlannerSnapshot, Task, TeamEditMode, UserRole } from '@/lib/domain/types';
 import { resolveSticky } from '@/lib/domain/sticky';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { OWNER_EMAIL } from '@/lib/security/roles';
@@ -14,6 +14,7 @@ import {
   DAY_START_HOUR,
   diffDays,
   isWeekend,
+  mondayOf,
   pad2,
   parseIsoDate,
   shiftIsoDate,
@@ -1071,8 +1072,17 @@ export function PlannerApp() {
         const form = new FormData();
         form.append('teamId', teamId);
         form.append('file', file);
-        await uploadForm('/api/excel/import', form);
-        await loadPlanner(teamId, timelineStartIso);
+        const result = await uploadForm<ExcelImportResult>('/api/excel/import', form);
+        if (result.addedAssignments + result.updatedAssignments === 0) {
+          const skipped = result.skippedEmployees.length ? ` Pominięci pracownicy: ${result.skippedEmployees.join(', ')}.` : '';
+          throw new Error(`Import nie dodał bloków na osi czasu.${skipped}`);
+        }
+        const importWeekStart = result.firstDate ? toIsoDate(mondayOf(parseIsoDate(result.firstDate))) : focusWeekStartIso;
+        const nextTimelineStart = toIsoDate(addDays(parseIsoDate(importWeekStart), -timelineLeadDays()));
+        setFocusWeekStartIso(importWeekStart);
+        setTimelineStartIso(nextTimelineStart);
+        setPendingCenterIso(importWeekStart);
+        await loadPlanner(teamId, nextTimelineStart);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Import z Excela nie powiódł się.';
         setError(message);
@@ -1081,7 +1091,7 @@ export function PlannerApp() {
         event.target.value = '';
       }
     },
-    [canImportExternal, loadPlanner, teamId, timelineStartIso]
+    [canImportExternal, focusWeekStartIso, loadPlanner, teamId]
   );
 
   const refreshTeams = useCallback(async (nextTeamId?: string) => {

@@ -250,12 +250,7 @@ export interface DataStore {
     addedTasks: number;
     addedEpics: number;
   }>;
-  importFromExcel(params: { teamId: string; userId: string; fileName: string; data: ArrayBuffer }): Promise<{
-    addedTasks: number;
-    addedAssignments: number;
-    skippedRows: number;
-    skippedEmployees: string[];
-  }>;
+  importFromExcel(params: { teamId: string; userId: string; fileName: string; data: ArrayBuffer }): Promise<ExcelImportResult>;
   exportPlannerBackup(params: {
     teamId: string;
     userId: string;
@@ -265,6 +260,17 @@ export interface DataStore {
     userId: string;
     backup: PlannerBackup;
   }): Promise<PlannerSnapshot>;
+}
+
+
+export interface ExcelImportResult {
+  addedTasks: number;
+  addedAssignments: number;
+  updatedAssignments: number;
+  skippedRows: number;
+  skippedEmployees: string[];
+  firstDate?: string;
+  lastDate?: string;
 }
 
 export interface PlannerBackup {

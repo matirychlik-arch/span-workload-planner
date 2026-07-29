@@ -165,13 +165,16 @@ function normalizeText(value: unknown): string {
 }
 
 function employeeToken(value: string): string {
-  return normalizeText(value)
+  const token = normalizeText(value)
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .split(' ')[0] ?? '';
+  if (token === 'mati' || token === 'mateusz') return 'mateusz';
+  if (token === 'pati' || token === 'patrycja') return 'patrycja';
+  return token;
 }
 
 function parseDate(value: string | number | undefined): string | null {

@@ -31,9 +31,10 @@ begin
   end if;
 
   update employees
-     set user_id = null
+     set user_id = null,
+         active = false
    where workspace_id = target_workspace_id
-     and user_id = owner_user_id;
+     and (user_id = owner_user_id or lower(name) = lower('Mateusz Owner'));
 
   insert into team_members (team_id, user_id, role)
   values (target_team_id, owner_user_id, 'admin')
