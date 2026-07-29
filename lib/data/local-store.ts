@@ -825,7 +825,7 @@ export class LocalStore implements DataStore {
         .filter((task) => task.workspaceId === team.workspaceId)
         .map((task) => [importKey(task.title), task])
     );
-    const existingAssignmentByKey = new Map(
+    const existingAssignmentByKey = new Map<string, Assignment>(
       this.state.assignments
         .filter((assignment) => assignment.teamId === params.teamId)
         .map((assignment) => {

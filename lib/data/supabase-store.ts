@@ -1658,7 +1658,7 @@ export class SupabaseStore implements DataStore {
     const taskTitleById = new Map((tasksResult.data as TaskRow[]).map(toTask).map((task) => [task.id, task.title]));
 
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
-    const existingAssignmentByKey = new Map(
+    const existingAssignmentByKey = new Map<string, Assignment>(
       allAssignments.map((assignment) => {
         const title = taskTitleById.get(assignment.taskId) ?? '';
         return [`${assignment.employeeId}|${assignment.startDate}|${importKey(title)}`, assignment] as const;
