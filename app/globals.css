@@ -293,6 +293,10 @@ button.secondary {
   min-width: 106px;
 }
 
+.range-select {
+  min-width: 112px;
+}
+
 .jira-btn {
   min-width: 132px;
 }

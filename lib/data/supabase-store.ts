@@ -529,7 +529,7 @@ export class SupabaseStore implements DataStore {
     for (const teamId of teamIds) {
       await this.ensureMember(teamId, userId, 'employee');
     }
-    await this.attachUserToEmployeeByName(workspaceId, userId, 'Mateusz');
+    await this.attachUserToEmployeeByName(workspaceId, userId, 'Mati');
 
     return true;
   }

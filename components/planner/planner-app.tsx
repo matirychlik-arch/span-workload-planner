@@ -84,6 +84,8 @@ type TaskEditDraft = {
   epicId: string;
 };
 
+type ViewWeeks = 1 | 2 | 4 | 5;
+
 type CloudBackupFile = {
   path: string;
   name: string;
@@ -95,10 +97,12 @@ type CloudBackupFile = {
 const HOUR_HEIGHT = 52;
 const DAY_WIDTH = 220;
 const TIMELINE_TOP = 18;
-const VISIBLE_DAY_COUNT = 35;
+const VIEW_WEEK_OPTIONS: ViewWeeks[] = [1, 2, 4, 5];
+const DEFAULT_VIEW_WEEKS: ViewWeeks = 1;
 const TIMELINE_SHIFT_DAYS = 14;
 const EDGE_THRESHOLD_DAYS = 3;
 const PERSON_TINTS = ['#EEF3FF', '#F6EFE8', '#EEF7EF', '#F2EDFA', '#FCF5E8', '#EBF4F4'];
+const EMPLOYEE_ORDER = ['marcin', 'mati', 'mateusz', 'pati', 'patrycja', 'adam'];
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -129,8 +133,12 @@ async function uploadForm<T>(url: string, body: FormData): Promise<T> {
   return payload.data;
 }
 
-function timelineLeadDays() {
-  return Math.max(1, Math.floor((VISIBLE_DAY_COUNT - 7) / 2) + 1);
+function visibleDayCountFor(viewWeeks: ViewWeeks): number {
+  return viewWeeks * 7;
+}
+
+function timelineLeadDays(visibleDayCount: number) {
+  return Math.max(0, Math.floor((visibleDayCount - 7) / 2));
 }
 
 function dateLabel(iso: string): string {
@@ -179,6 +187,30 @@ function blocksLabel(count: number): string {
 
 function companyInitial(name?: string): string {
   return (name?.trim()[0] ?? 'F').toUpperCase();
+}
+
+function normalizedPersonToken(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')[0] ?? '';
+}
+
+function employeeRank(name: string): number {
+  const token = normalizedPersonToken(name);
+  const index = EMPLOYEE_ORDER.indexOf(token);
+  return index >= 0 ? index : EMPLOYEE_ORDER.length;
+}
+
+function employeeDisplayName(name: string): string {
+  const token = normalizedPersonToken(name);
+  if (token === 'mateusz') return 'Mati';
+  if (token === 'patrycja') return 'Pati';
+  const first = name.split(/[-/]/)[0]?.trim().split(/\s+/)[0];
+  return first || name;
 }
 
 function taskDescription(task: Task): string {
@@ -232,10 +264,11 @@ export function PlannerApp() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [cloudBackups, setCloudBackups] = useState<CloudBackupFile[]>([]);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
+  const [viewWeeks, setViewWeeks] = useState<ViewWeeks>(DEFAULT_VIEW_WEEKS);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
     const weekStart = startOfCurrentWeek();
-    return toIsoDate(addDays(weekStart, -timelineLeadDays()));
+    return toIsoDate(addDays(weekStart, -timelineLeadDays(visibleDayCountFor(DEFAULT_VIEW_WEEKS))));
   });
   const plannerWrapRef = useRef<HTMLDivElement | null>(null);
   const excelInputRef = useRef<HTMLInputElement | null>(null);
@@ -249,11 +282,14 @@ export function PlannerApp() {
   const latestPlannerMutationIdRef = useRef(0);
   const pendingPlannerMutationCountRef = useRef(0);
   const latestPlannerMutationErrorRef = useRef<string | null>(null);
+  const copiedAssignmentIdsRef = useRef<string[]>([]);
+
+  const visibleDayCount = visibleDayCountFor(viewWeeks);
 
   const visibleDays = useMemo(() => {
     const start = parseIsoDate(timelineStartIso);
-    return Array.from({ length: VISIBLE_DAY_COUNT }, (_, index) => toIsoDate(addDays(start, index)));
-  }, [timelineStartIso]);
+    return Array.from({ length: visibleDayCount }, (_, index) => toIsoDate(addDays(start, index)));
+  }, [timelineStartIso, visibleDayCount]);
 
   const epicById = useMemo(() => {
     const map = new Map<string, Epic>();
@@ -306,6 +342,12 @@ export function PlannerApp() {
   const backlogTasks = useMemo(() => {
     return (snapshot?.tasks ?? []).filter((task) => !plannedTaskIds.has(task.id));
   }, [snapshot?.tasks, plannedTaskIds]);
+
+  const employeesForRender = useMemo(() => {
+    return [...(snapshot?.employees ?? [])].sort(
+      (a, b) => employeeRank(a.name) - employeeRank(b.name) || employeeDisplayName(a.name).localeCompare(employeeDisplayName(b.name), 'pl')
+    );
+  }, [snapshot?.employees]);
 
   const updateSnapshot = useCallback((next: PlannerSnapshot) => {
     setSnapshot(next);
@@ -360,7 +402,7 @@ export function PlannerApp() {
 
   const loadPlanner = useCallback(
     async (nextTeamId: string, rangeStartIso: string) => {
-      const rangeEnd = shiftIsoDate(rangeStartIso, VISIBLE_DAY_COUNT - 1);
+      const rangeEnd = shiftIsoDate(rangeStartIso, visibleDayCount - 1);
       const query = new URLSearchParams({
         teamId: nextTeamId,
         from: rangeStartIso,
@@ -371,7 +413,7 @@ export function PlannerApp() {
         updateSnapshot(data);
       }
     },
-    [updateSnapshot]
+    [updateSnapshot, visibleDayCount]
   );
 
   const queuePlannerCommit = useCallback(
@@ -482,18 +524,29 @@ export function PlannerApp() {
   const moveWeek = useCallback((delta: number) => {
     const nextWeekStart = toIsoDate(addDays(parseIsoDate(focusWeekStartIso), delta * 7));
     setFocusWeekStartIso(nextWeekStart);
-    const centeredStart = toIsoDate(addDays(parseIsoDate(nextWeekStart), -timelineLeadDays()));
+    const centeredStart = toIsoDate(addDays(parseIsoDate(nextWeekStart), -timelineLeadDays(visibleDayCount)));
     setTimelineStartIso(centeredStart);
     setPendingCenterIso(nextWeekStart);
-  }, [focusWeekStartIso]);
+  }, [focusWeekStartIso, visibleDayCount]);
 
   const goToday = useCallback(() => {
     const weekStart = toIsoDate(startOfCurrentWeek());
     setFocusWeekStartIso(weekStart);
-    const centeredStart = toIsoDate(addDays(parseIsoDate(weekStart), -timelineLeadDays()));
+    const centeredStart = toIsoDate(addDays(parseIsoDate(weekStart), -timelineLeadDays(visibleDayCount)));
     setTimelineStartIso(centeredStart);
     setPendingCenterIso(weekStart);
-  }, []);
+  }, [visibleDayCount]);
+
+  const handleViewWeeksChange = useCallback(
+    (nextViewWeeks: ViewWeeks) => {
+      const nextVisibleDayCount = visibleDayCountFor(nextViewWeeks);
+      setViewWeeks(nextViewWeeks);
+      const nextTimelineStart = toIsoDate(addDays(parseIsoDate(focusWeekStartIso), -timelineLeadDays(nextVisibleDayCount)));
+      setTimelineStartIso(nextTimelineStart);
+      setPendingCenterIso(focusWeekStartIso);
+    },
+    [focusWeekStartIso]
+  );
 
   const shiftTimelineWindow = useCallback(
     async (direction: -1 | 1) => {
@@ -805,10 +858,86 @@ export function PlannerApp() {
     [canEdit, queuePlannerCommit, selectedIds, snapshot, teamId, updateSnapshot]
   );
 
+  const handleCopySelection = useCallback(() => {
+    if (!selectedIds.size) return;
+    const readyIds = Array.from(selectedIds).filter((id) => !isOptimisticId(id));
+    copiedAssignmentIdsRef.current = readyIds;
+  }, [selectedIds]);
+
+  const handlePasteAssignments = useCallback(() => {
+    if (!teamId || !canEdit || !snapshot) return;
+    const assignmentIds = copiedAssignmentIdsRef.current.filter((id) =>
+      snapshot.assignments.some((assignment) => assignment.id === id)
+    );
+    if (!assignmentIds.length) return;
+    if (assignmentIds.some(isOptimisticId)) {
+      setError(PENDING_ASSIGNMENT_MESSAGE);
+      return;
+    }
+
+    const anchor = snapshot.assignments.find((assignment) => assignment.id === assignmentIds[0]);
+    if (!anchor) return;
+    const context: PlannerDragContext = {
+      source: 'planner',
+      anchorAssignmentId: anchor.id,
+      assignmentIds,
+      originals: assignmentIds
+        .map((id) => snapshot.assignments.find((assignment) => assignment.id === id))
+        .filter((item): item is Assignment => Boolean(item))
+        .map((assignment) => ({
+          id: assignment.id,
+          taskId: assignment.taskId,
+          employeeId: assignment.employeeId,
+          startDate: assignment.startDate,
+          startHour: assignment.startHour,
+          durationHours: assignment.durationHours,
+          durationDays: assignment.durationDays
+        }))
+    };
+    const target = {
+      employeeId: anchor.employeeId,
+      date: shiftIsoDate(anchor.startDate, anchor.durationDays || 1),
+      startHour: anchor.startHour
+    };
+    const optimisticSnapshot = buildOptimisticDropSnapshot(context, target, true);
+    if (optimisticSnapshot) updateSnapshot(optimisticSnapshot);
+
+    queuePlannerCommit(
+      () =>
+        api<PlannerSnapshot>('/api/assignments/copy', {
+          method: 'POST',
+          body: JSON.stringify({
+            teamId,
+            assignmentIds,
+            anchorAssignmentId: anchor.id,
+            targetEmployeeId: target.employeeId,
+            targetDate: target.date,
+            targetStartHour: target.startHour
+          })
+        }),
+      'Błąd podczas wklejania.'
+    );
+    setSelectedIds(new Set());
+  }, [buildOptimisticDropSnapshot, canEdit, queuePlannerCommit, snapshot, teamId, updateSnapshot]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
       if (isTextInputTarget(event.target)) return;
+      const key = event.key.toLowerCase();
+      const modifier = event.metaKey || event.ctrlKey;
+      if (modifier && key === 'c') {
+        if (!selectedIds.size || !canEdit) return;
+        event.preventDefault();
+        handleCopySelection();
+        return;
+      }
+      if (modifier && key === 'v') {
+        if (!canEdit) return;
+        event.preventDefault();
+        handlePasteAssignments();
+        return;
+      }
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
       if (!selectedIds.size || !canEdit) return;
       event.preventDefault();
       void handleDelete();
@@ -816,7 +945,7 @@ export function PlannerApp() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [canEdit, handleDelete, selectedIds.size]);
+  }, [canEdit, handleCopySelection, handleDelete, handlePasteAssignments, selectedIds.size]);
 
   const handleDeleteTasks = useCallback(
     (taskIds: string[]) => {
@@ -875,7 +1004,7 @@ export function PlannerApp() {
             method: 'POST',
             body: JSON.stringify({ teamId, assignmentIds, epicId })
           }),
-        'Błąd podczas zmiany epica.'
+        'Błąd podczas zmiany koloru.'
       );
     },
     [canEdit, queuePlannerCommit, selectedIds, snapshot, teamId, updateSnapshot]
@@ -1130,7 +1259,7 @@ export function PlannerApp() {
           throw new Error(`Import nie dodał bloków na osi czasu.${skipped}`);
         }
         const importWeekStart = result.firstDate ? toIsoDate(mondayOf(parseIsoDate(result.firstDate))) : focusWeekStartIso;
-        const nextTimelineStart = toIsoDate(addDays(parseIsoDate(importWeekStart), -timelineLeadDays()));
+        const nextTimelineStart = toIsoDate(addDays(parseIsoDate(importWeekStart), -timelineLeadDays(visibleDayCount)));
         setFocusWeekStartIso(importWeekStart);
         setTimelineStartIso(nextTimelineStart);
         setPendingCenterIso(importWeekStart);
@@ -1143,7 +1272,7 @@ export function PlannerApp() {
         event.target.value = '';
       }
     },
-    [canImportExternal, focusWeekStartIso, loadPlanner, teamId]
+    [canImportExternal, focusWeekStartIso, loadPlanner, teamId, visibleDayCount]
   );
 
   const refreshTeams = useCallback(async (nextTeamId?: string) => {
@@ -1522,7 +1651,7 @@ export function PlannerApp() {
         setNewEpicName('');
         setNewEpicColor('#4A7FF8');
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Nie udało się dodać epica.';
+        const message = err instanceof Error ? err.message : 'Nie udało się dodać koloru.';
         setError(message);
       } finally {
         setSettingsSaving(false);
@@ -1550,7 +1679,7 @@ export function PlannerApp() {
         });
         updateSnapshot(next);
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Nie udało się zapisać epica.';
+        const message = err instanceof Error ? err.message : 'Nie udało się zapisać koloru.';
         setError(message);
       } finally {
         setSettingsSaving(false);
@@ -1574,7 +1703,7 @@ export function PlannerApp() {
         });
         updateSnapshot(next);
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Nie udało się usunąć epica.';
+        const message = err instanceof Error ? err.message : 'Nie udało się usunąć koloru.';
         setError(message);
       } finally {
         setSettingsSaving(false);
@@ -1621,7 +1750,7 @@ export function PlannerApp() {
             <img className="brand-logo" src="/assets/span-logo.svg" alt="SPAN" />
             <div className="brand-claim-wrap">
               <span className="brand-separator">|</span>
-              <span className="brand-claim">Jira mówi, co trzeba zrobić. SPAN pokazuje, kiedy.</span>
+              <span className="brand-claim">SPAN pokazuje, kto ma przestrzeń i kiedy.</span>
             </div>
           </div>
           <div className="topbar-actions">
@@ -1664,23 +1793,6 @@ export function PlannerApp() {
                 Brak teamu
               </button>
             )}
-            <button className="secondary jira-btn" onClick={handleImportJira} disabled={!canImportExternal}>
-              Import z Jiry
-            </button>
-            <input
-              ref={excelInputRef}
-              type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              hidden
-              onChange={handleImportExcel}
-            />
-            <button
-              className="secondary jira-btn"
-              onClick={() => excelInputRef.current?.click()}
-              disabled={!canImportExternal || excelImporting}
-            >
-              {excelImporting ? 'Importuję...' : 'Import Excel'}
-            </button>
             <button
               className="add-btn"
               disabled={!canEdit}
@@ -1708,6 +1820,18 @@ export function PlannerApp() {
                 ›
               </button>
             </div>
+            <select
+              className="range-select"
+              value={viewWeeks}
+              onChange={(event) => handleViewWeeksChange(Number(event.target.value) as ViewWeeks)}
+              aria-label="Zakres widoku"
+            >
+              {VIEW_WEEK_OPTIONS.map((weeks) => (
+                <option key={weeks} value={weeks}>
+                  {weeks === 1 ? '1 tydzień' : `${weeks} tyg.`}
+                </option>
+              ))}
+            </select>
             <button className="secondary today-btn" onClick={goToday}>
               Dzisiaj
             </button>
@@ -1753,9 +1877,9 @@ export function PlannerApp() {
                   rows={3}
                 />
               </div>
-              <div className="selection-subtitle mono">Epic / kolor</div>
+              <div className="selection-subtitle mono">Kolor</div>
               <div className="selection-epics">
-                {snapshot.epics.map((epic) => {
+                {snapshot.epics.map((epic, index) => {
                   const isActive = taskEditDraft.epicId === epic.id;
                   return (
                     <button
@@ -1764,9 +1888,10 @@ export function PlannerApp() {
                       className={`epic-choice ${isActive ? 'active' : ''}`}
                       style={{ '--epic-color': epic.color } as CSSProperties}
                       onClick={() => setTaskEditDraft((current) => (current ? { ...current, epicId: epic.id } : current))}
+                      title={`Kolor ${index + 1}`}
                     >
                       <span className="epic-choice-dot" />
-                      <span>{epic.name}</span>
+                      <span>Kolor {index + 1}</span>
                     </button>
                   );
                 })}
@@ -1784,7 +1909,7 @@ export function PlannerApp() {
                   <div className="selection-count mono">
                     {blocksLabel(selectedAssignments.length)}
                   </div>
-                  <strong>Zmień epic / kolor</strong>
+                  <strong>Zmień kolor</strong>
                 </div>
                 <button
                   className="selection-clear"
@@ -1796,7 +1921,7 @@ export function PlannerApp() {
                 </button>
               </div>
               <div className="selection-epics">
-                {snapshot.epics.map((epic) => {
+                {snapshot.epics.map((epic, index) => {
                   const isActive = selectedEpicIds.size === 1 && selectedEpicIds.has(epic.id);
                   return (
                     <button
@@ -1805,9 +1930,10 @@ export function PlannerApp() {
                       className={`epic-choice ${isActive ? 'active' : ''}`}
                       style={{ '--epic-color': epic.color } as CSSProperties}
                       onClick={() => handleAssignmentEpicChange(epic.id)}
+                      title={`Kolor ${index + 1}`}
                     >
                       <span className="epic-choice-dot" />
-                      <span>{epic.name}</span>
+                      <span>Kolor {index + 1}</span>
                     </button>
                   );
                 })}
@@ -1822,7 +1948,7 @@ export function PlannerApp() {
           <section className="empty-panel">
             <div className="mono">Czysta karta</div>
             <h1>Utwórz pierwszy team</h1>
-            <p>Workspace jest pusty. Dodaj zespół, a potem pracowników, epiki i taski.</p>
+            <p>Workspace jest pusty. Dodaj zespół, a potem pracowników i taski.</p>
             <form className="empty-create-form" onSubmit={handleCreateTeam}>
               <input
                 value={newWorkspaceName}
@@ -1863,7 +1989,7 @@ export function PlannerApp() {
                 <div>
                   <div className="mono">Backlog</div>
                   <h2>Taski do zaplanowania</h2>
-                  <div className="hint">Taski z Jiry i ręczne. Kolor = epic.</div>
+                  <div className="hint">Taski ręczne. Kolor ustawisz prawym klikiem.</div>
                 </div>
                 <div className="side-actions">
                   <button
@@ -1901,18 +2027,6 @@ export function PlannerApp() {
                     maxLength={240}
                     rows={2}
                   />
-                  <select
-                    value={manualEpicId}
-                    onChange={(event) => setManualEpicId(event.target.value)}
-                    disabled={!canEdit}
-                  >
-                    <option value="">Domyślny epic</option>
-                    {(snapshot?.epics ?? []).map((epic) => (
-                      <option key={epic.id} value={epic.id}>
-                        {epic.name}
-                      </option>
-                    ))}
-                  </select>
                   <div className="composer-actions">
                     <button type="submit" disabled={!canEdit || !manualTaskTitle.trim()}>
                       Dodaj
@@ -1972,7 +2086,7 @@ export function PlannerApp() {
                       <span className="task-dot" />
                       <div className="task-title">{task.title}</div>
                       <div className="task-meta">
-                        {taskReady ? description || `1h · ${epic?.name ?? 'epic'}` : 'zapisywanie...'}
+                        {taskReady ? description || '1h' : 'zapisywanie...'}
                       </div>
                     </div>
                   );
@@ -1983,8 +2097,8 @@ export function PlannerApp() {
         </aside>
 
         <section className="planner-wrap" data-onboarding="timeline" ref={plannerWrapRef}>
-          <div className="planner" style={{ '--visible-days': String(VISIBLE_DAY_COUNT) } as CSSProperties}>
-            <div className="grid-header" style={{ gridTemplateColumns: `var(--name) repeat(${VISIBLE_DAY_COUNT}, var(--day))` }}>
+          <div className="planner" style={{ '--visible-days': String(visibleDayCount) } as CSSProperties}>
+            <div className="grid-header" style={{ gridTemplateColumns: `var(--name) repeat(${visibleDayCount}, var(--day))` }}>
               <div className="corner">OSOBA</div>
               {visibleDays.map((date) => {
                 const weekend = isWeekend(parseIsoDate(date));
@@ -1997,14 +2111,14 @@ export function PlannerApp() {
               })}
             </div>
 
-            {(snapshot?.employees ?? []).map((employee, employeeIndex) => (
+            {employeesForRender.map((employee, employeeIndex) => (
               <div
                 key={employee.id}
                 className="person-wrap"
                 style={{ '--person-tint': employee.tintColor ?? PERSON_TINTS[employeeIndex % PERSON_TINTS.length] } as CSSProperties}
               >
                 <div className="person-card">
-                  <div className="person-name">{employee.name}</div>
+                  <div className="person-name">{employeeDisplayName(employee.name)}</div>
                 </div>
                 <div className="days-row">
                   {visibleDays.map((date) => {
@@ -2256,21 +2370,9 @@ export function PlannerApp() {
               </div>
             </div>
             <div className="settings-section settings-form">
-              <div className="settings-label">Jira dla obecnego teamu</div>
-              <input
-                value={jiraQuery}
-                onChange={(event) => setJiraQuery(event.target.value)}
-                disabled={!canManageSettings || settingsSaving}
-                placeholder="JQL, np. project = MV AND status != Done"
-              />
-              <div className="settings-muted">
-                Token Jiry nie jest widoczny w aplikacji. Jeśli firma pozwoli na integrację, zostanie ustawiony po stronie Vercela.
-              </div>
-            </div>
-            <div className="settings-section settings-form">
               <div className="settings-label">Migawki i backup</div>
               <div className="settings-muted">
-                Migawka zapisuje teamy, pracowników, epiki, taski i ułożenie kalendarza do pliku JSON.
+                Migawka zapisuje teamy, pracowników, taski, kolory i ułożenie kalendarza do pliku JSON.
               </div>
               <div className="settings-inline">
                 <button
@@ -2473,85 +2575,6 @@ export function PlannerApp() {
                         type="button"
                         className="secondary danger-btn"
                         onClick={() => void handleDeactivateEmployee(employee.id)}
-                        disabled={!canManageSettings || settingsSaving}
-                      >
-                        Usuń
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="settings-section">
-              <div className="settings-label">Epiki</div>
-              <form className="epic-create-row" onSubmit={handleCreateEpic}>
-                <input
-                  value={newEpicName}
-                  onChange={(event) => setNewEpicName(event.target.value)}
-                  disabled={!canManageSettings || settingsSaving}
-                  placeholder="Nazwa epica"
-                />
-                <input
-                  className="color-input"
-                  type="color"
-                  value={newEpicColor}
-                  onChange={(event) => setNewEpicColor(event.target.value)}
-                  disabled={!canManageSettings || settingsSaving}
-                  aria-label="Kolor epica"
-                />
-                <button type="submit" disabled={!canManageSettings || settingsSaving || !newEpicName.trim()}>
-                  Dodaj
-                </button>
-              </form>
-              <div className="epic-settings-list">
-                {(snapshot?.epics ?? []).map((epic) => {
-                  const draft = epicDrafts[epic.id] ?? {
-                    name: epic.name,
-                    color: epic.color
-                  };
-                  return (
-                    <div key={epic.id} className="epic-settings-row">
-                      <input
-                        value={draft.name}
-                        onChange={(event) =>
-                          setEpicDrafts((prev) => ({
-                            ...prev,
-                            [epic.id]: {
-                              ...draft,
-                              name: event.target.value
-                            }
-                          }))
-                        }
-                        disabled={!canManageSettings || settingsSaving}
-                      />
-                      <input
-                        className="color-input"
-                        type="color"
-                        value={draft.color}
-                        onChange={(event) =>
-                          setEpicDrafts((prev) => ({
-                            ...prev,
-                            [epic.id]: {
-                              ...draft,
-                              color: event.target.value
-                            }
-                          }))
-                        }
-                        disabled={!canManageSettings || settingsSaving}
-                        aria-label={`Kolor epica ${epic.name}`}
-                      />
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => void handleSaveEpic(epic.id)}
-                        disabled={!canManageSettings || settingsSaving || !draft.name.trim()}
-                      >
-                        Zapisz
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary danger-btn"
-                        onClick={() => void handleDeleteEpic(epic.id)}
                         disabled={!canManageSettings || settingsSaving}
                       >
                         Usuń

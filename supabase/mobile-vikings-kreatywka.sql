@@ -68,10 +68,10 @@ begin
   select target_workspace_id, target_team_id, null, employee_name, true, tint_color
     from (
       values
-        ('Adam - traffic', '#F2EDFA'),
+        ('Marcin - grafik', '#F6EFE8'),
         ('Mati - grafik', '#EEF3FF'),
         ('Pati - copywriterka', '#EEF7EF'),
-        ('Marcin - grafik', '#F6EFE8')
+        ('Adam - traffic', '#F2EDFA')
     ) as employee_seed(employee_name, tint_color)
    where not exists (
      select 1 from employees

@@ -1,5 +1,5 @@
-export const DAY_START_HOUR = 7;
-export const DAY_END_HOUR = 19;
+export const DAY_START_HOUR = 8;
+export const DAY_END_HOUR = 16;
 export const HOURS_PER_DAY = DAY_END_HOUR - DAY_START_HOUR;
 export const MAX_DURATION_DAYS = 10;
 

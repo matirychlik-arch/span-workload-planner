@@ -5,10 +5,10 @@ export const MATEUSZ_WORK_EMAIL = 'mateusz.rychlik@mobilevikings.pl';
 export const CREATIVE_TEAM_NAME = 'Kreatywny';
 
 export const CREATIVE_EMPLOYEES = [
-  { name: 'Mateusz - grafik', tintColor: '#EEF3FF', key: 'mateusz' },
   { name: 'Marcin - grafik', tintColor: '#F6EFE8', key: 'marcin' },
-  { name: 'Patrycja - copywriterka', tintColor: '#EEF7EF', key: 'patrycja' },
-  { name: 'Adam - copywriter / traffic', tintColor: '#F2EDFA', key: 'adam' },
+  { name: 'Mati - grafik', tintColor: '#EEF3FF', key: 'mateusz' },
+  { name: 'Pati - copywriterka', tintColor: '#EEF7EF', key: 'patrycja' },
+  { name: 'Adam - traffic', tintColor: '#F2EDFA', key: 'adam' },
   { name: 'Karo - PM', tintColor: '#FCF5E8', key: 'karo' }
 ] as const;
 
