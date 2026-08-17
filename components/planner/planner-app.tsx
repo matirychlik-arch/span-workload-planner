@@ -72,6 +72,12 @@ type DropPreview = {
   color: string;
 };
 
+type DropTarget = {
+  employeeId: string;
+  date: string;
+  startHour: number;
+};
+
 type SelectionMenuPosition = {
   x: number;
   y: number;
@@ -293,6 +299,7 @@ export function PlannerApp() {
   const pendingPlannerMutationCountRef = useRef(0);
   const latestPlannerMutationErrorRef = useRef<string | null>(null);
   const copiedAssignmentIdsRef = useRef<string[]>([]);
+  const pasteTargetRef = useRef<DropTarget | null>(null);
 
   const visibleDayCount = TIMELINE_BUFFER_DAYS;
   const dayWidth = dayWidthFor(viewWeeks);
@@ -621,6 +628,7 @@ export function PlannerApp() {
   const clearDropPreview = useCallback(() => {
     setDropPreview([]);
     setDropCellKey(null);
+    pasteTargetRef.current = null;
   }, []);
 
   const buildPlannerDragContext = useCallback(
@@ -649,10 +657,39 @@ export function PlannerApp() {
     [selectedIds, snapshot?.assignments]
   );
 
+  const buildCopiedDragContext = useCallback((): PlannerDragContext | null => {
+    if (!snapshot) return null;
+    const assignmentIds = copiedAssignmentIdsRef.current.filter((id) =>
+      snapshot.assignments.some((assignment) => assignment.id === id)
+    );
+    if (!assignmentIds.length) return null;
+
+    const anchor = snapshot.assignments.find((assignment) => assignment.id === assignmentIds[0]);
+    if (!anchor) return null;
+
+    return {
+      source: 'planner',
+      anchorAssignmentId: anchor.id,
+      assignmentIds,
+      originals: assignmentIds
+        .map((id) => snapshot.assignments.find((assignment) => assignment.id === id))
+        .filter((item): item is Assignment => Boolean(item))
+        .map((assignment) => ({
+          id: assignment.id,
+          taskId: assignment.taskId,
+          employeeId: assignment.employeeId,
+          startDate: assignment.startDate,
+          startHour: assignment.startHour,
+          durationHours: assignment.durationHours,
+          durationDays: assignment.durationDays
+        }))
+    };
+  }, [snapshot]);
+
   const previewFromContext = useCallback(
     (
       context: PlannerDragContext | null,
-      target: { employeeId: string; date: string; startHour: number }
+      target: DropTarget
     ): DropPreview[] => {
       if (!context) return [];
       if (context.source === 'backlog') {
@@ -700,7 +737,7 @@ export function PlannerApp() {
   const buildOptimisticDropSnapshot = useCallback(
     (
       context: PlannerDragContext,
-      target: { employeeId: string; date: string; startHour: number },
+      target: DropTarget,
       copyMode: boolean
     ): PlannerSnapshot | null => {
       if (!snapshot) return null;
@@ -782,7 +819,7 @@ export function PlannerApp() {
   const handleDrop = useCallback(
     async (
       event: React.DragEvent<HTMLDivElement>,
-      target: { employeeId: string; date: string; startHour: number }
+      target: DropTarget
     ) => {
       event.preventDefault();
       if (!canEdit || !teamId || !dragContext) return;
@@ -883,39 +920,20 @@ export function PlannerApp() {
 
   const handlePasteAssignments = useCallback(() => {
     if (!teamId || !canEdit || !snapshot) return;
-    const assignmentIds = copiedAssignmentIdsRef.current.filter((id) =>
-      snapshot.assignments.some((assignment) => assignment.id === id)
-    );
+    const context = buildCopiedDragContext();
+    if (!context || context.source !== 'planner') return;
+    const assignmentIds = context.assignmentIds;
     if (!assignmentIds.length) return;
     if (assignmentIds.some(isOptimisticId)) {
       setError(PENDING_ASSIGNMENT_MESSAGE);
       return;
     }
 
-    const anchor = snapshot.assignments.find((assignment) => assignment.id === assignmentIds[0]);
-    if (!anchor) return;
-    const context: PlannerDragContext = {
-      source: 'planner',
-      anchorAssignmentId: anchor.id,
-      assignmentIds,
-      originals: assignmentIds
-        .map((id) => snapshot.assignments.find((assignment) => assignment.id === id))
-        .filter((item): item is Assignment => Boolean(item))
-        .map((assignment) => ({
-          id: assignment.id,
-          taskId: assignment.taskId,
-          employeeId: assignment.employeeId,
-          startDate: assignment.startDate,
-          startHour: assignment.startHour,
-          durationHours: assignment.durationHours,
-          durationDays: assignment.durationDays
-        }))
-    };
-    const target = {
-      employeeId: anchor.employeeId,
-      date: shiftIsoDate(anchor.startDate, anchor.durationDays || 1),
-      startHour: anchor.startHour
-    };
+    const target = pasteTargetRef.current;
+    if (!target) {
+      setError('Najedź na miejsce w kalendarzu i wtedy wklej skopiowany task.');
+      return;
+    }
     const optimisticSnapshot = buildOptimisticDropSnapshot(context, target, true);
     if (optimisticSnapshot) updateSnapshot(optimisticSnapshot);
 
@@ -926,7 +944,7 @@ export function PlannerApp() {
           body: JSON.stringify({
             teamId,
             assignmentIds,
-            anchorAssignmentId: anchor.id,
+            anchorAssignmentId: context.anchorAssignmentId,
             targetEmployeeId: target.employeeId,
             targetDate: target.date,
             targetStartHour: target.startHour
@@ -935,7 +953,8 @@ export function PlannerApp() {
       'Błąd podczas wklejania.'
     );
     setSelectedIds(new Set());
-  }, [buildOptimisticDropSnapshot, canEdit, queuePlannerCommit, snapshot, teamId, updateSnapshot]);
+    clearDropPreview();
+  }, [buildCopiedDragContext, buildOptimisticDropSnapshot, canEdit, clearDropPreview, queuePlannerCommit, snapshot, teamId, updateSnapshot]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1903,7 +1922,7 @@ export function PlannerApp() {
                   rows={3}
                 />
               </div>
-              <div className="selection-subtitle mono">Kolor</div>
+              <div className="selection-subtitle mono">Paleta kolorów</div>
               <div className="selection-epics">
                 {snapshot.epics.map((epic, index) => {
                   const isActive = taskEditDraft.epicId === epic.id;
@@ -1915,9 +1934,9 @@ export function PlannerApp() {
                       style={{ '--epic-color': epic.color } as CSSProperties}
                       onClick={() => setTaskEditDraft((current) => (current ? { ...current, epicId: epic.id } : current))}
                       title={`Kolor ${index + 1}`}
+                      aria-label={`Wybierz kolor ${index + 1}`}
                     >
                       <span className="epic-choice-dot" />
-                      <span>Kolor {index + 1}</span>
                     </button>
                   );
                 })}
@@ -1935,7 +1954,7 @@ export function PlannerApp() {
                   <div className="selection-count mono">
                     {blocksLabel(selectedAssignments.length)}
                   </div>
-                  <strong>Zmień kolor</strong>
+                  <strong>Paleta kolorów</strong>
                 </div>
                 <button
                   className="selection-clear"
@@ -1957,9 +1976,9 @@ export function PlannerApp() {
                       style={{ '--epic-color': epic.color } as CSSProperties}
                       onClick={() => handleAssignmentEpicChange(epic.id)}
                       title={`Kolor ${index + 1}`}
+                      aria-label={`Zmień na kolor ${index + 1}`}
                     >
                       <span className="epic-choice-dot" />
-                      <span>Kolor {index + 1}</span>
                     </button>
                   );
                 })}
@@ -2169,6 +2188,20 @@ export function PlannerApp() {
 
                         <div
                           className="drop"
+                          onMouseMove={(event) => {
+                            if (!canEdit || dragContext || resizing || copiedAssignmentIdsRef.current.length === 0) return;
+                            const context = buildCopiedDragContext();
+                            if (!context) return;
+                            const y = event.clientY - event.currentTarget.getBoundingClientRect().top;
+                            const startHour = clamp(DAY_START_HOUR + Math.floor(y / HOUR_HEIGHT), DAY_START_HOUR, DAY_END_HOUR - 1);
+                            const target = { employeeId: employee.id, date, startHour };
+                            pasteTargetRef.current = target;
+                            setDropCellKey(cellKey);
+                            setDropPreview(previewFromContext(context, target));
+                          }}
+                          onMouseLeave={() => {
+                            if (!dragContext) clearDropPreview();
+                          }}
                           onDragOver={(event) => {
                             event.preventDefault();
                             if (!canEdit) return;

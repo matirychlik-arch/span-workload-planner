@@ -537,22 +537,26 @@ export class SupabaseStore implements DataStore {
   private async ensureDefaultEpic(workspaceId: string, teamId: string): Promise<void> {
     const { data: epics, error } = await this.client
       .from('epics')
-      .select('id')
+      .select('id, name')
       .eq('workspace_id', workspaceId)
-      .eq('team_id', teamId)
-      .limit(1);
+      .eq('team_id', teamId);
     if (error) throw new Error(error.message);
-    if (epics?.length) return;
 
-    const fallbackEpic = seedEpics[0] ?? { name: 'Manual', color: '#4A7FF8' };
-    const { error: insertError } = await this.client.from('epics').insert({
-      id: randomUUID(),
-      workspace_id: workspaceId,
-      team_id: teamId,
-      jira_key: null,
-      name: fallbackEpic.name,
-      color: fallbackEpic.color
-    });
+    const existingNames = new Set((epics ?? []).map((epic) => String(epic.name).toLowerCase()));
+    const palette = seedEpics.length ? seedEpics : [{ name: 'Kolor 1', color: '#4A7FF8' }];
+    const missing = palette.filter((epic) => !existingNames.has(epic.name.toLowerCase()));
+    if (!missing.length) return;
+
+    const { error: insertError } = await this.client.from('epics').insert(
+      missing.map((epic) => ({
+        id: randomUUID(),
+        workspace_id: workspaceId,
+        team_id: teamId,
+        jira_key: null,
+        name: epic.name,
+        color: epic.color
+      }))
+    );
     if (insertError) throw new Error(insertError.message);
   }
 
@@ -698,6 +702,7 @@ export class SupabaseStore implements DataStore {
     const { team, members, role } = await this.teamContext(teamId, userId);
     const canEdit = role === 'admin' || role === 'pm' || (role === 'employee' && team.editMode === 'collaborative');
     const memberUserIds = members.map((member) => member.userId);
+    await this.ensureDefaultEpic(team.workspaceId, team.id);
 
     const [workspaceResult, usersResult, employeesResult, epicsResult, tasksResult, assignmentsResult] = await Promise.all([
       this.client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', team.workspaceId).single(),

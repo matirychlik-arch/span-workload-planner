@@ -438,25 +438,23 @@ button.secondary {
 
 .selection-epics {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
   gap: 6px;
   max-height: 210px;
   overflow: auto;
 }
 
 .epic-choice {
-  display: grid;
-  grid-template-columns: 14px 1fr;
+  display: inline-grid;
+  place-items: center;
   align-items: center;
-  gap: 9px;
   width: 100%;
-  min-height: 38px;
-  padding: 8px 10px;
-  border-radius: 10px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 8px;
   border: 0.5px solid var(--line);
   background: #fff;
   color: var(--text);
-  text-align: left;
-  font-size: 13px;
 }
 
 .epic-choice.active {
@@ -465,8 +463,8 @@ button.secondary {
 }
 
 .epic-choice-dot {
-  width: 10px;
-  height: 10px;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
   background: var(--epic-color, var(--blue));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--epic-color, var(--blue)) 16%, #fff);
