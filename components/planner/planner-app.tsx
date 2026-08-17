@@ -95,10 +95,11 @@ type CloudBackupFile = {
 };
 
 const HOUR_HEIGHT = 52;
-const DAY_WIDTH = 220;
+const BASE_DAY_WIDTH = 220;
 const TIMELINE_TOP = 18;
 const VIEW_WEEK_OPTIONS: ViewWeeks[] = [1, 2, 4, 5];
 const DEFAULT_VIEW_WEEKS: ViewWeeks = 1;
+const TIMELINE_BUFFER_DAYS = 35;
 const TIMELINE_SHIFT_DAYS = 14;
 const EDGE_THRESHOLD_DAYS = 3;
 const PERSON_TINTS = ['#EEF3FF', '#F6EFE8', '#EEF7EF', '#F2EDFA', '#FCF5E8', '#EBF4F4'];
@@ -133,15 +134,24 @@ async function uploadForm<T>(url: string, body: FormData): Promise<T> {
   return payload.data;
 }
 
-function visibleDayCountFor(viewWeeks: ViewWeeks): number {
-  return viewWeeks * 7;
+function dayWidthFor(viewWeeks: ViewWeeks): number {
+  if (viewWeeks === 2) return 112;
+  if (viewWeeks === 4) return 64;
+  if (viewWeeks === 5) return 52;
+  return BASE_DAY_WIDTH;
 }
 
 function timelineLeadDays(visibleDayCount: number) {
   return Math.max(0, Math.floor((visibleDayCount - 7) / 2));
 }
 
-function dateLabel(iso: string): string {
+function dateLabel(iso: string, compact = false): string {
+  if (compact) {
+    return parseIsoDate(iso).toLocaleDateString('pl-PL', {
+      day: '2-digit',
+      month: '2-digit'
+    });
+  }
   return parseIsoDate(iso).toLocaleDateString('pl-PL', {
     weekday: 'short',
     day: '2-digit',
@@ -268,7 +278,7 @@ export function PlannerApp() {
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
     const weekStart = startOfCurrentWeek();
-    return toIsoDate(addDays(weekStart, -timelineLeadDays(visibleDayCountFor(DEFAULT_VIEW_WEEKS))));
+    return toIsoDate(addDays(weekStart, -timelineLeadDays(TIMELINE_BUFFER_DAYS)));
   });
   const plannerWrapRef = useRef<HTMLDivElement | null>(null);
   const excelInputRef = useRef<HTMLInputElement | null>(null);
@@ -284,7 +294,8 @@ export function PlannerApp() {
   const latestPlannerMutationErrorRef = useRef<string | null>(null);
   const copiedAssignmentIdsRef = useRef<string[]>([]);
 
-  const visibleDayCount = visibleDayCountFor(viewWeeks);
+  const visibleDayCount = TIMELINE_BUFFER_DAYS;
+  const dayWidth = dayWidthFor(viewWeeks);
 
   const visibleDays = useMemo(() => {
     const start = parseIsoDate(timelineStartIso);
@@ -503,8 +514,8 @@ export function PlannerApp() {
     if (!wrap) return;
     const index = visibleDays.findIndex((day) => day === weekStartIso);
     if (index < 0) return;
-    wrap.scrollLeft = Math.max(0, index * DAY_WIDTH);
-  }, [visibleDays]);
+    wrap.scrollLeft = Math.max(0, index * dayWidth);
+  }, [dayWidth, visibleDays]);
 
   useEffect(() => {
     if (!snapshot || centeredOnceRef.current) return;
@@ -537,15 +548,21 @@ export function PlannerApp() {
     setPendingCenterIso(weekStart);
   }, [visibleDayCount]);
 
-  const handleViewWeeksChange = useCallback(
+  const handleZoomChange = useCallback(
     (nextViewWeeks: ViewWeeks) => {
-      const nextVisibleDayCount = visibleDayCountFor(nextViewWeeks);
       setViewWeeks(nextViewWeeks);
-      const nextTimelineStart = toIsoDate(addDays(parseIsoDate(focusWeekStartIso), -timelineLeadDays(nextVisibleDayCount)));
-      setTimelineStartIso(nextTimelineStart);
       setPendingCenterIso(focusWeekStartIso);
     },
     [focusWeekStartIso]
+  );
+
+  const zoomTimeline = useCallback(
+    (direction: -1 | 1) => {
+      const currentIndex = VIEW_WEEK_OPTIONS.indexOf(viewWeeks);
+      const nextIndex = clamp(currentIndex + direction, 0, VIEW_WEEK_OPTIONS.length - 1);
+      handleZoomChange(VIEW_WEEK_OPTIONS[nextIndex]);
+    },
+    [handleZoomChange, viewWeeks]
   );
 
   const shiftTimelineWindow = useCallback(
@@ -553,7 +570,7 @@ export function PlannerApp() {
       if (!teamId || shiftingRef.current) return;
       shiftingRef.current = true;
       const wrap = plannerWrapRef.current;
-      const shiftPx = TIMELINE_SHIFT_DAYS * DAY_WIDTH;
+      const shiftPx = TIMELINE_SHIFT_DAYS * dayWidth;
       const currentLeft = wrap?.scrollLeft ?? 0;
 
       const nextStart = shiftIsoDate(timelineStartIso, direction * TIMELINE_SHIFT_DAYS);
@@ -570,7 +587,7 @@ export function PlannerApp() {
         });
       }
     },
-    [loadPlanner, teamId, timelineStartIso]
+    [dayWidth, loadPlanner, teamId, timelineStartIso]
   );
 
   useEffect(() => {
@@ -578,7 +595,7 @@ export function PlannerApp() {
     if (!wrap) return;
     const onScroll = () => {
       if (shiftingRef.current) return;
-      const threshold = EDGE_THRESHOLD_DAYS * DAY_WIDTH;
+      const threshold = EDGE_THRESHOLD_DAYS * dayWidth;
       const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
       if (wrap.scrollLeft < threshold) {
         void shiftTimelineWindow(-1);
@@ -590,7 +607,7 @@ export function PlannerApp() {
     };
     wrap.addEventListener('scroll', onScroll);
     return () => wrap.removeEventListener('scroll', onScroll);
-  }, [shiftTimelineWindow]);
+  }, [dayWidth, shiftTimelineWindow]);
 
   const getDayItems = useCallback(
     (employeeId: string, dateIso: string): Assignment[] => {
@@ -1134,7 +1151,7 @@ export function PlannerApp() {
         return;
       }
       const durationDays = clamp(
-        resizing.startDays + Math.round((event.clientX - resizing.startX) / DAY_WIDTH),
+        resizing.startDays + Math.round((event.clientX - resizing.startX) / dayWidth),
         1,
         10
       );
@@ -1172,7 +1189,7 @@ export function PlannerApp() {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [handleResizeCommit, resizing, snapshot]);
+  }, [dayWidth, handleResizeCommit, resizing, snapshot]);
 
   const handleCreateTask = useCallback(
     async (event?: FormEvent<HTMLFormElement>) => {
@@ -1820,18 +1837,27 @@ export function PlannerApp() {
                 ›
               </button>
             </div>
-            <select
-              className="range-select"
-              value={viewWeeks}
-              onChange={(event) => handleViewWeeksChange(Number(event.target.value) as ViewWeeks)}
-              aria-label="Zakres widoku"
-            >
-              {VIEW_WEEK_OPTIONS.map((weeks) => (
-                <option key={weeks} value={weeks}>
-                  {weeks === 1 ? '1 tydzień' : `${weeks} tyg.`}
-                </option>
-              ))}
-            </select>
+            <div className="zoom-switch" aria-label="Zoom osi czasu">
+              <button
+                className="secondary zoom-btn"
+                onClick={() => zoomTimeline(1)}
+                disabled={viewWeeks === VIEW_WEEK_OPTIONS[VIEW_WEEK_OPTIONS.length - 1]}
+                aria-label="Oddal oś czasu"
+                title="Oddal"
+              >
+                -
+              </button>
+              <div className="zoom-label mono">{viewWeeks === 1 ? '1 tydz.' : `${viewWeeks} tyg.`}</div>
+              <button
+                className="secondary zoom-btn"
+                onClick={() => zoomTimeline(-1)}
+                disabled={viewWeeks === VIEW_WEEK_OPTIONS[0]}
+                aria-label="Przybliż oś czasu"
+                title="Przybliż"
+              >
+                +
+              </button>
+            </div>
             <button className="secondary today-btn" onClick={goToday}>
               Dzisiaj
             </button>
@@ -2097,7 +2123,7 @@ export function PlannerApp() {
         </aside>
 
         <section className="planner-wrap" data-onboarding="timeline" ref={plannerWrapRef}>
-          <div className="planner" style={{ '--visible-days': String(visibleDayCount) } as CSSProperties}>
+          <div className="planner" style={{ '--visible-days': String(visibleDayCount), '--day': `${dayWidth}px` } as CSSProperties}>
             <div className="grid-header" style={{ gridTemplateColumns: `var(--name) repeat(${visibleDayCount}, var(--day))` }}>
               <div className="corner">OSOBA</div>
               {visibleDays.map((date) => {
@@ -2105,7 +2131,7 @@ export function PlannerApp() {
                 const today = toIsoDate(new Date()) === date;
                 return (
                   <div key={date} className={`day-head ${weekend ? 'weekend' : ''} ${today ? 'today' : ''}`}>
-                    {dateLabel(date)}
+                    {dateLabel(date, viewWeeks >= 4)}
                   </div>
                 );
               })}

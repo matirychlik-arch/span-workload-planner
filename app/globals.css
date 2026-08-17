@@ -22,7 +22,7 @@
   --axis-pad: 18px;
   --sum-space: 44px;
   --shell-offset: 150px;
-  --workday: calc(var(--hour) * 12);
+  --workday: calc(var(--hour) * 8);
   --employee-height: calc(var(--axis-pad) + var(--workday) + var(--sum-space) + 14px);
 }
 
@@ -293,8 +293,42 @@ button.secondary {
   min-width: 106px;
 }
 
-.range-select {
-  min-width: 112px;
+.zoom-switch {
+  display: grid;
+  grid-template-columns: 38px minmax(74px, auto) 38px;
+  align-items: center;
+  border: 0.5px solid var(--line2);
+  background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.zoom-btn {
+  border: 0;
+  border-radius: 0;
+  min-height: 44px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0;
+}
+
+.zoom-btn:first-child {
+  border-right: 0.5px solid var(--line);
+}
+
+.zoom-btn:last-child {
+  border-left: 0.5px solid var(--line);
+}
+
+.zoom-label {
+  min-width: 74px;
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .jira-btn {
