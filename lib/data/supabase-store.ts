@@ -323,9 +323,19 @@ export class SupabaseStore implements DataStore {
       .from('app_users')
       .select('workspace_id')
       .eq('email', OWNER_EMAIL)
-      .maybeSingle();
+      .order('created_at', { ascending: true });
     if (error) throw new Error(error.message);
-    return data?.workspace_id ? String(data.workspace_id) : null;
+    const workspaceIds = Array.from(new Set((data ?? []).map((row) => String(row.workspace_id)).filter(Boolean)));
+    if (!workspaceIds.length) return null;
+
+    const { data: teams, error: teamsError } = await this.client
+      .from('teams')
+      .select('workspace_id')
+      .in('workspace_id', workspaceIds);
+    if (teamsError) throw new Error(teamsError.message);
+
+    const workspaceIdsWithTeams = new Set((teams ?? []).map((team) => String(team.workspace_id)));
+    return workspaceIds.find((workspaceId) => workspaceIdsWithTeams.has(workspaceId)) ?? workspaceIds[0] ?? null;
   }
 
   private async detachUserFromWorkspaceEmployees(workspaceId: string, userId: string): Promise<void> {
@@ -534,6 +544,32 @@ export class SupabaseStore implements DataStore {
     return true;
   }
 
+  private async attachOwnerToExistingWorkspace(userId: string, profile: { email: string; name: string; googleSub: string | null }): Promise<boolean> {
+    if (!isOwnerEmail(profile.email)) return false;
+    const workspaceId = await this.ownerWorkspaceId();
+    if (!workspaceId) return false;
+
+    const userRow: AppUserRow = {
+      id: userId,
+      workspace_id: workspaceId,
+      email: profile.email,
+      name: 'Mateusz admin',
+      google_sub: profile.googleSub,
+      slack_user_id: null
+    };
+    const { error: userError } = await this.client.from('app_users').upsert(userRow, { onConflict: 'id' });
+    if (userError) throw new Error(userError.message);
+
+    await this.removeUserMembershipsOutsideWorkspace(userId, workspaceId);
+    const teamIds = await this.teamIdsForWorkspace(workspaceId);
+    for (const teamId of teamIds) {
+      await this.ensureMember(teamId, userId, 'admin');
+    }
+    await this.detachUserFromWorkspaceEmployees(workspaceId, userId);
+
+    return true;
+  }
+
   private async ensureDefaultEpic(workspaceId: string, teamId: string): Promise<void> {
     const { data: epics, error } = await this.client
       .from('epics')
@@ -572,13 +608,16 @@ export class SupabaseStore implements DataStore {
     if (userError) throw new Error(userError.message);
     if (existingUser) {
       if (isOwnerEmail(profile.email)) {
-        await this.detachUserFromWorkspaceEmployees(String(existingUser.workspace_id), userId);
+        if (!(await this.attachOwnerToExistingWorkspace(userId, profile))) {
+          await this.detachUserFromWorkspaceEmployees(String(existingUser.workspace_id), userId);
+        }
       } else if (!(await this.attachInvitedUser(userId, profile))) {
         await this.attachMateuszWorkUser(userId, profile);
       }
       return;
     }
 
+    if (await this.attachOwnerToExistingWorkspace(userId, profile)) return;
     if (await this.attachInvitedUser(userId, profile)) return;
     if (await this.attachMateuszWorkUser(userId, profile)) return;
 
