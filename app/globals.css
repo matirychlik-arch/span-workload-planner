@@ -14,6 +14,7 @@
   --coral: #ff7648;
   --hour: 52px;
   --day: 220px;
+  --planner-scale: 1;
   --name: 132px;
   --time: 52px;
   --side: 330px;
@@ -735,6 +736,14 @@ h2 {
 
 .planner {
   min-width: calc(var(--name) + var(--visible-days) * var(--day));
+  zoom: var(--planner-scale);
+  transform-origin: top left;
+}
+
+@supports not (zoom: 1) {
+  .planner {
+    transform: scale(var(--planner-scale));
+  }
 }
 
 .grid-header {

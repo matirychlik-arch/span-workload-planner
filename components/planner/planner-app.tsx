@@ -90,7 +90,7 @@ type TaskEditDraft = {
   epicId: string;
 };
 
-type ViewWeeks = 1 | 2 | 4 | 5;
+type PlannerZoom = 1 | 0.8 | 0.65 | 0.5;
 
 type CloudBackupFile = {
   path: string;
@@ -103,8 +103,8 @@ type CloudBackupFile = {
 const HOUR_HEIGHT = 52;
 const BASE_DAY_WIDTH = 220;
 const TIMELINE_TOP = 18;
-const VIEW_WEEK_OPTIONS: ViewWeeks[] = [1, 2, 4, 5];
-const DEFAULT_VIEW_WEEKS: ViewWeeks = 1;
+const PLANNER_ZOOM_OPTIONS: PlannerZoom[] = [1, 0.8, 0.65, 0.5];
+const DEFAULT_PLANNER_ZOOM: PlannerZoom = 1;
 const TIMELINE_BUFFER_DAYS = 35;
 const TIMELINE_SHIFT_DAYS = 14;
 const EDGE_THRESHOLD_DAYS = 3;
@@ -138,13 +138,6 @@ async function uploadForm<T>(url: string, body: FormData): Promise<T> {
     throw new Error(message);
   }
   return payload.data;
-}
-
-function dayWidthFor(viewWeeks: ViewWeeks): number {
-  if (viewWeeks === 2) return 112;
-  if (viewWeeks === 4) return 64;
-  if (viewWeeks === 5) return 52;
-  return BASE_DAY_WIDTH;
 }
 
 function timelineLeadDays(visibleDayCount: number) {
@@ -280,7 +273,7 @@ export function PlannerApp() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [cloudBackups, setCloudBackups] = useState<CloudBackupFile[]>([]);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
-  const [viewWeeks, setViewWeeks] = useState<ViewWeeks>(DEFAULT_VIEW_WEEKS);
+  const [plannerZoom, setPlannerZoom] = useState<PlannerZoom>(DEFAULT_PLANNER_ZOOM);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
     const weekStart = startOfCurrentWeek();
@@ -302,7 +295,8 @@ export function PlannerApp() {
   const pasteTargetRef = useRef<DropTarget | null>(null);
 
   const visibleDayCount = TIMELINE_BUFFER_DAYS;
-  const dayWidth = dayWidthFor(viewWeeks);
+  const dayWidth = BASE_DAY_WIDTH;
+  const scaledDayWidth = dayWidth * plannerZoom;
 
   const visibleDays = useMemo(() => {
     const start = parseIsoDate(timelineStartIso);
@@ -521,8 +515,8 @@ export function PlannerApp() {
     if (!wrap) return;
     const index = visibleDays.findIndex((day) => day === weekStartIso);
     if (index < 0) return;
-    wrap.scrollLeft = Math.max(0, index * dayWidth);
-  }, [dayWidth, visibleDays]);
+    wrap.scrollLeft = Math.max(0, index * scaledDayWidth);
+  }, [scaledDayWidth, visibleDays]);
 
   useEffect(() => {
     if (!snapshot || centeredOnceRef.current) return;
@@ -556,8 +550,8 @@ export function PlannerApp() {
   }, [visibleDayCount]);
 
   const handleZoomChange = useCallback(
-    (nextViewWeeks: ViewWeeks) => {
-      setViewWeeks(nextViewWeeks);
+    (nextZoom: PlannerZoom) => {
+      setPlannerZoom(nextZoom);
       setPendingCenterIso(focusWeekStartIso);
     },
     [focusWeekStartIso]
@@ -565,11 +559,11 @@ export function PlannerApp() {
 
   const zoomTimeline = useCallback(
     (direction: -1 | 1) => {
-      const currentIndex = VIEW_WEEK_OPTIONS.indexOf(viewWeeks);
-      const nextIndex = clamp(currentIndex + direction, 0, VIEW_WEEK_OPTIONS.length - 1);
-      handleZoomChange(VIEW_WEEK_OPTIONS[nextIndex]);
+      const currentIndex = PLANNER_ZOOM_OPTIONS.indexOf(plannerZoom);
+      const nextIndex = clamp(currentIndex + direction, 0, PLANNER_ZOOM_OPTIONS.length - 1);
+      handleZoomChange(PLANNER_ZOOM_OPTIONS[nextIndex]);
     },
-    [handleZoomChange, viewWeeks]
+    [handleZoomChange, plannerZoom]
   );
 
   const shiftTimelineWindow = useCallback(
@@ -577,7 +571,7 @@ export function PlannerApp() {
       if (!teamId || shiftingRef.current) return;
       shiftingRef.current = true;
       const wrap = plannerWrapRef.current;
-      const shiftPx = TIMELINE_SHIFT_DAYS * dayWidth;
+      const shiftPx = TIMELINE_SHIFT_DAYS * scaledDayWidth;
       const currentLeft = wrap?.scrollLeft ?? 0;
 
       const nextStart = shiftIsoDate(timelineStartIso, direction * TIMELINE_SHIFT_DAYS);
@@ -594,7 +588,7 @@ export function PlannerApp() {
         });
       }
     },
-    [dayWidth, loadPlanner, teamId, timelineStartIso]
+    [loadPlanner, scaledDayWidth, teamId, timelineStartIso]
   );
 
   useEffect(() => {
@@ -602,7 +596,7 @@ export function PlannerApp() {
     if (!wrap) return;
     const onScroll = () => {
       if (shiftingRef.current) return;
-      const threshold = EDGE_THRESHOLD_DAYS * dayWidth;
+      const threshold = EDGE_THRESHOLD_DAYS * scaledDayWidth;
       const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
       if (wrap.scrollLeft < threshold) {
         void shiftTimelineWindow(-1);
@@ -614,7 +608,7 @@ export function PlannerApp() {
     };
     wrap.addEventListener('scroll', onScroll);
     return () => wrap.removeEventListener('scroll', onScroll);
-  }, [dayWidth, shiftTimelineWindow]);
+  }, [scaledDayWidth, shiftTimelineWindow]);
 
   const getDayItems = useCallback(
     (employeeId: string, dateIso: string): Assignment[] => {
@@ -630,6 +624,14 @@ export function PlannerApp() {
     setDropCellKey(null);
     pasteTargetRef.current = null;
   }, []);
+
+  const startHourFromPointer = useCallback(
+    (clientY: number, element: HTMLElement): number => {
+      const y = (clientY - element.getBoundingClientRect().top) / plannerZoom;
+      return clamp(DAY_START_HOUR + Math.floor(y / HOUR_HEIGHT), DAY_START_HOUR, DAY_END_HOUR - 1);
+    },
+    [plannerZoom]
+  );
 
   const buildPlannerDragContext = useCallback(
     (anchor: Assignment): PlannerDragContext => {
@@ -1150,7 +1152,7 @@ export function PlannerApp() {
     const onMove = (event: MouseEvent) => {
       if (resizing.type === 'y') {
         const durationHours = clamp(
-          resizing.startHours + Math.round((event.clientY - resizing.startY) / HOUR_HEIGHT),
+          resizing.startHours + Math.round((event.clientY - resizing.startY) / (HOUR_HEIGHT * plannerZoom)),
           1,
           DAY_END_HOUR - assignment.startHour
         );
@@ -1170,7 +1172,7 @@ export function PlannerApp() {
         return;
       }
       const durationDays = clamp(
-        resizing.startDays + Math.round((event.clientX - resizing.startX) / dayWidth),
+        resizing.startDays + Math.round((event.clientX - resizing.startX) / (dayWidth * plannerZoom)),
         1,
         10
       );
@@ -1208,7 +1210,7 @@ export function PlannerApp() {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [dayWidth, handleResizeCommit, resizing, snapshot]);
+  }, [dayWidth, handleResizeCommit, plannerZoom, resizing, snapshot]);
 
   const handleCreateTask = useCallback(
     async (event?: FormEvent<HTMLFormElement>) => {
@@ -1860,18 +1862,18 @@ export function PlannerApp() {
               <button
                 className="secondary zoom-btn"
                 onClick={() => zoomTimeline(1)}
-                disabled={viewWeeks === VIEW_WEEK_OPTIONS[VIEW_WEEK_OPTIONS.length - 1]}
-                aria-label="Oddal oś czasu"
+                disabled={plannerZoom === PLANNER_ZOOM_OPTIONS[PLANNER_ZOOM_OPTIONS.length - 1]}
+                aria-label="Oddal planner"
                 title="Oddal"
               >
                 -
               </button>
-              <div className="zoom-label mono">{viewWeeks === 1 ? '1 tydz.' : `${viewWeeks} tyg.`}</div>
+              <div className="zoom-label mono">{Math.round(plannerZoom * 100)}%</div>
               <button
                 className="secondary zoom-btn"
                 onClick={() => zoomTimeline(-1)}
-                disabled={viewWeeks === VIEW_WEEK_OPTIONS[0]}
-                aria-label="Przybliż oś czasu"
+                disabled={plannerZoom === PLANNER_ZOOM_OPTIONS[0]}
+                aria-label="Przybliż planner"
                 title="Przybliż"
               >
                 +
@@ -2142,7 +2144,16 @@ export function PlannerApp() {
         </aside>
 
         <section className="planner-wrap" data-onboarding="timeline" ref={plannerWrapRef}>
-          <div className="planner" style={{ '--visible-days': String(visibleDayCount), '--day': `${dayWidth}px` } as CSSProperties}>
+          <div
+            className="planner"
+            style={
+              {
+                '--visible-days': String(visibleDayCount),
+                '--day': `${dayWidth}px`,
+                '--planner-scale': String(plannerZoom)
+              } as CSSProperties
+            }
+          >
             <div className="grid-header" style={{ gridTemplateColumns: `var(--name) repeat(${visibleDayCount}, var(--day))` }}>
               <div className="corner">OSOBA</div>
               {visibleDays.map((date) => {
@@ -2150,7 +2161,7 @@ export function PlannerApp() {
                 const today = toIsoDate(new Date()) === date;
                 return (
                   <div key={date} className={`day-head ${weekend ? 'weekend' : ''} ${today ? 'today' : ''}`}>
-                    {dateLabel(date, viewWeeks >= 4)}
+                    {dateLabel(date, plannerZoom <= 0.65)}
                   </div>
                 );
               })}
@@ -2192,8 +2203,7 @@ export function PlannerApp() {
                             if (!canEdit || dragContext || resizing || copiedAssignmentIdsRef.current.length === 0) return;
                             const context = buildCopiedDragContext();
                             if (!context) return;
-                            const y = event.clientY - event.currentTarget.getBoundingClientRect().top;
-                            const startHour = clamp(DAY_START_HOUR + Math.floor(y / HOUR_HEIGHT), DAY_START_HOUR, DAY_END_HOUR - 1);
+                            const startHour = startHourFromPointer(event.clientY, event.currentTarget);
                             const target = { employeeId: employee.id, date, startHour };
                             pasteTargetRef.current = target;
                             setDropCellKey(cellKey);
@@ -2205,8 +2215,7 @@ export function PlannerApp() {
                           onDragOver={(event) => {
                             event.preventDefault();
                             if (!canEdit) return;
-                            const y = event.clientY - event.currentTarget.getBoundingClientRect().top;
-                            const startHour = clamp(DAY_START_HOUR + Math.floor(y / HOUR_HEIGHT), DAY_START_HOUR, DAY_END_HOUR - 1);
+                            const startHour = startHourFromPointer(event.clientY, event.currentTarget);
                             if (dragContext?.source === 'planner' && event.dataTransfer) {
                               event.dataTransfer.dropEffect = event.altKey ? 'copy' : 'move';
                             }
@@ -2217,8 +2226,7 @@ export function PlannerApp() {
                             clearDropPreview();
                           }}
                           onDrop={(event) => {
-                            const y = event.clientY - event.currentTarget.getBoundingClientRect().top;
-                            const startHour = clamp(DAY_START_HOUR + Math.floor(y / HOUR_HEIGHT), DAY_START_HOUR, DAY_END_HOUR - 1);
+                            const startHour = startHourFromPointer(event.clientY, event.currentTarget);
                             void handleDrop(event, { employeeId: employee.id, date, startHour });
                           }}
                         />
