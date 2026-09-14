@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
-import { resolveSticky } from '@/lib/domain/sticky';
+import { resolveSticky, resolveStickyForEmployees } from '@/lib/domain/sticky';
 import { Assignment, AppUser, DataStore, Employee, Epic, ExcelImportResult, PlannerBackup, PlannerSnapshot, Task, Team, TeamEditMode, TeamMember, UserRole, Workspace } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
@@ -850,7 +850,9 @@ export class SupabaseStore implements DataStore {
       });
     });
 
-    const resolved = resolveSticky(nextAssignments, params.anchorAssignmentId);
+    const touchedEmployeeIds = new Set<string>([params.targetEmployeeId]);
+    selected.forEach((assignment) => touchedEmployeeIds.add(assignment.employeeId));
+    const resolved = resolveStickyForEmployees(nextAssignments, touchedEmployeeIds, params.anchorAssignmentId);
     await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
@@ -896,7 +898,7 @@ export class SupabaseStore implements DataStore {
     });
 
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
-    const resolved = resolveSticky([...allAssignments, created], created.id);
+    const resolved = resolveStickyForEmployees([...allAssignments, created], [created.employeeId], created.id);
     await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
@@ -1002,6 +1004,10 @@ export class SupabaseStore implements DataStore {
     if (assignmentsError) throw new Error(assignmentsError.message);
 
     const assignmentIds = (assignments ?? []).map((assignment) => String(assignment.id));
+    const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
+    const touchedEmployeeIds = new Set(
+      allAssignments.filter((assignment) => taskIds.includes(assignment.taskId)).map((assignment) => assignment.employeeId)
+    );
     if (assignmentIds.length) {
       await this.assertEmployeeOwnScope(params.teamId, params.userId, role, assignmentIds);
       const { error: deleteAssignmentsError } = await this.client
@@ -1020,8 +1026,8 @@ export class SupabaseStore implements DataStore {
       .in('id', taskIds);
     if (deleteTasksError) throw new Error(deleteTasksError.message);
 
-    const remaining = await this.loadAssignmentsForTeam(params.teamId);
-    const resolved = resolveSticky(remaining);
+    const remaining = allAssignments.filter((assignment) => !taskIds.includes(assignment.taskId));
+    const resolved = resolveStickyForEmployees(remaining, touchedEmployeeIds);
     await this.persistResolvedAssignments(remaining, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
@@ -1412,6 +1418,10 @@ export class SupabaseStore implements DataStore {
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, params.assignmentIds);
 
+    const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
+    const touchedEmployeeIds = new Set(
+      allAssignments.filter((assignment) => params.assignmentIds.includes(assignment.id)).map((assignment) => assignment.employeeId)
+    );
     const { error: deleteError } = await this.client
       .from('assignments')
       .delete()
@@ -1419,8 +1429,8 @@ export class SupabaseStore implements DataStore {
       .in('id', params.assignmentIds);
     if (deleteError) throw new Error(deleteError.message);
 
-    const remaining = await this.loadAssignmentsForTeam(params.teamId);
-    const resolved = resolveSticky(remaining);
+    const remaining = allAssignments.filter((assignment) => !params.assignmentIds.includes(assignment.id));
+    const resolved = resolveStickyForEmployees(remaining, touchedEmployeeIds);
     await this.persistResolvedAssignments(remaining, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
@@ -1545,7 +1555,7 @@ export class SupabaseStore implements DataStore {
     });
 
     const nextAssignments = allAssignments.map((assignment) => (assignment.id === target.id ? updated : assignment));
-    const resolved = resolveSticky(nextAssignments, target.id);
+    const resolved = resolveStickyForEmployees(nextAssignments, [target.employeeId], target.id);
     await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
@@ -1622,7 +1632,7 @@ export class SupabaseStore implements DataStore {
       })
     );
 
-    const resolved = resolveSticky([...allAssignments, ...copies], copies[0]?.id);
+    const resolved = resolveStickyForEmployees([...allAssignments, ...copies], [params.targetEmployeeId], copies[0]?.id);
     await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }
@@ -1661,7 +1671,12 @@ export class SupabaseStore implements DataStore {
       });
     });
 
-    const resolved = resolveSticky(nextAssignments, params.moves[0]?.assignmentId);
+    const touchedEmployeeIds = new Set<string>();
+    params.moves.forEach((move) => touchedEmployeeIds.add(move.employeeId));
+    allAssignments.forEach((assignment) => {
+      if (params.moves.some((move) => move.assignmentId === assignment.id)) touchedEmployeeIds.add(assignment.employeeId);
+    });
+    const resolved = resolveStickyForEmployees(nextAssignments, touchedEmployeeIds, params.moves[0]?.assignmentId);
     await this.persistResolvedAssignments(allAssignments, resolved);
     return this.snapshot(params.teamId, params.userId);
   }

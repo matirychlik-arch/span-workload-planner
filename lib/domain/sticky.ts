@@ -107,3 +107,33 @@ export function resolveSticky(assignments: Assignment[], pinnedAssignmentId?: st
   }
   return resolved;
 }
+
+export function resolveStickyForEmployees(
+  assignments: Assignment[],
+  employeeIds: Iterable<string>,
+  pinnedAssignmentId?: string
+): Assignment[] {
+  const touchedEmployeeIds = new Set(employeeIds);
+  if (!touchedEmployeeIds.size) return assignments;
+
+  const byEmployee = new Map<string, Assignment[]>();
+  for (const assignment of assignments) {
+    if (!touchedEmployeeIds.has(assignment.employeeId)) continue;
+    const list = byEmployee.get(assignment.employeeId) ?? [];
+    list.push(assignment);
+    byEmployee.set(assignment.employeeId, list);
+  }
+
+  if (!byEmployee.size) return assignments;
+
+  const resolvedById = new Map<string, Assignment>();
+  for (const [employeeId, group] of byEmployee.entries()) {
+    const resolvedGroup = resolveStickyForEmployee(
+      group,
+      group.some((item) => item.id === pinnedAssignmentId) ? pinnedAssignmentId : undefined
+    );
+    resolvedGroup.forEach((item) => resolvedById.set(item.id, { ...item, employeeId }));
+  }
+
+  return assignments.map((assignment) => resolvedById.get(assignment.id) ?? assignment);
+}

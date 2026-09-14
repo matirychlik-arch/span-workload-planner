@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { CSSProperties, ChangeEvent, FormEvent } from 'react';
 import type { Assignment, Epic, ExcelImportResult, PlannerSnapshot, Task, TeamEditMode, UserRole } from '@/lib/domain/types';
-import { resolveSticky } from '@/lib/domain/sticky';
+import { resolveStickyForEmployees } from '@/lib/domain/sticky';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { OWNER_EMAIL } from '@/lib/security/roles';
 import {
@@ -811,7 +811,7 @@ export function PlannerApp() {
         };
         return {
           ...snapshot,
-          assignments: resolveSticky([...snapshot.assignments, created], created.id)
+          assignments: resolveStickyForEmployees([...snapshot.assignments, created], [created.employeeId], created.id)
         };
       }
 
@@ -853,15 +853,17 @@ export function PlannerApp() {
         return {
           ...snapshot,
           tasks: taskCopies.length ? [...snapshot.tasks, ...taskCopies] : snapshot.tasks,
-          assignments: resolveSticky([...snapshot.assignments, ...copies], copies[0]?.id)
+          assignments: resolveStickyForEmployees([...snapshot.assignments, ...copies], [target.employeeId], copies[0]?.id)
         };
       }
 
       const movedIds = new Set(context.assignmentIds);
+      const touchedEmployeeIds = new Set<string>([target.employeeId]);
       const nextAssignments = snapshot.assignments.map((assignment) => {
         if (!movedIds.has(assignment.id)) return assignment;
         const original = context.originals.find((item) => item.id === assignment.id);
         if (!original) return assignment;
+        touchedEmployeeIds.add(assignment.employeeId);
         const nextStart = clamp(original.startHour + hourDelta, DAY_START_HOUR, DAY_END_HOUR - 1);
         return {
           ...assignment,
@@ -876,7 +878,7 @@ export function PlannerApp() {
 
       return {
         ...snapshot,
-        assignments: resolveSticky(nextAssignments, context.anchorAssignmentId)
+        assignments: resolveStickyForEmployees(nextAssignments, touchedEmployeeIds, context.anchorAssignmentId)
       };
     },
     [snapshot, taskById, teamId]
@@ -961,9 +963,13 @@ export function PlannerApp() {
       }
       if (snapshot) {
         const removeSet = new Set(toDelete);
+        const touchedEmployeeIds = new Set(
+          snapshot.assignments.filter((assignment) => removeSet.has(assignment.id)).map((assignment) => assignment.employeeId)
+        );
+        const nextAssignments = snapshot.assignments.filter((assignment) => !removeSet.has(assignment.id));
         updateSnapshot({
           ...snapshot,
-          assignments: resolveSticky(snapshot.assignments.filter((assignment) => !removeSet.has(assignment.id)))
+          assignments: resolveStickyForEmployees(nextAssignments, touchedEmployeeIds)
         });
       }
       queuePlannerCommit(
@@ -1061,10 +1067,14 @@ export function PlannerApp() {
       }
 
       const removeSet = new Set(readyTaskIds);
+      const touchedEmployeeIds = new Set(
+        snapshot.assignments.filter((assignment) => removeSet.has(assignment.taskId)).map((assignment) => assignment.employeeId)
+      );
+      const nextAssignments = snapshot.assignments.filter((assignment) => !removeSet.has(assignment.taskId));
       updateSnapshot({
         ...snapshot,
         tasks: snapshot.tasks.filter((task) => !removeSet.has(task.id)),
-        assignments: resolveSticky(snapshot.assignments.filter((assignment) => !removeSet.has(assignment.taskId)))
+        assignments: resolveStickyForEmployees(nextAssignments, touchedEmployeeIds)
       });
       queuePlannerCommit(
         () =>
@@ -1188,9 +1198,12 @@ export function PlannerApp() {
               }
             : assignment
         );
+        const touchedEmployeeIds = new Set(
+          snapshot.assignments.filter((assignment) => assignment.id === assignmentId).map((assignment) => assignment.employeeId)
+        );
         updateSnapshot({
           ...snapshot,
-          assignments: resolveSticky(nextAssignments, assignmentId)
+          assignments: resolveStickyForEmployees(nextAssignments, touchedEmployeeIds, assignmentId)
         });
       }
       queuePlannerCommit(

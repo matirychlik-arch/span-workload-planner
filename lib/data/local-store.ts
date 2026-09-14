@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { seedAssignments, seedEmployees, seedEpics, seedTasks, seedTeamMembers, seedTeams, seedUsers, seedWorkspace } from '@/lib/data/mock-seed';
-import { resolveSticky } from '@/lib/domain/sticky';
+import { resolveSticky, resolveStickyForEmployees } from '@/lib/domain/sticky';
 import { Assignment, DataStore, ExcelImportResult, PlannerBackup, PlannerSnapshot, Team, TeamEditMode, TeamMember, UserRole } from '@/lib/domain/types';
 import { clamp, DAY_END_HOUR, DAY_START_HOUR, diffDays, MAX_DURATION_DAYS, shiftIsoDate } from '@/lib/domain/time';
 import { assertCanEditTeam, assertTeamAccess } from '@/lib/security/access';
@@ -91,9 +91,9 @@ function assertEmployeeOwnScope(state: LocalState, teamId: string, userId: strin
   }
 }
 
-function applyStickyForTeam(state: LocalState, teamId: string, pinnedAssignmentId?: string): void {
+function applyStickyForTeam(state: LocalState, teamId: string, pinnedAssignmentId?: string, employeeIds?: Iterable<string>): void {
   const teamAssignments = state.assignments.filter((item) => item.teamId === teamId).map(normalizedAssignment);
-  const resolved = resolveSticky(teamAssignments, pinnedAssignmentId);
+  const resolved = employeeIds ? resolveStickyForEmployees(teamAssignments, employeeIds, pinnedAssignmentId) : resolveSticky(teamAssignments, pinnedAssignmentId);
   const resolvedMap = new Map(resolved.map((item) => [item.id, item]));
 
   state.assignments = state.assignments.map((assignment) => {
@@ -205,7 +205,12 @@ export class LocalStore implements DataStore {
       });
     });
 
-    applyStickyForTeam(this.state, params.teamId, params.anchorAssignmentId);
+    applyStickyForTeam(
+      this.state,
+      params.teamId,
+      params.anchorAssignmentId,
+      new Set([params.targetEmployeeId, ...selected.map((assignment) => assignment.employeeId)])
+    );
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
@@ -243,7 +248,7 @@ export class LocalStore implements DataStore {
     });
 
     this.state.assignments.push(created);
-    applyStickyForTeam(this.state, params.teamId, created.id);
+    applyStickyForTeam(this.state, params.teamId, created.id, [created.employeeId]);
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
@@ -304,13 +309,18 @@ export class LocalStore implements DataStore {
       assertEmployeeOwnScope(this.state, params.teamId, params.userId, role, assignmentIds);
     }
 
+    const touchedEmployeeIds = new Set(
+      this.state.assignments
+        .filter((assignment) => assignment.teamId === params.teamId && removeSet.has(assignment.taskId))
+        .map((assignment) => assignment.employeeId)
+    );
     this.state.assignments = this.state.assignments.filter(
       (assignment) => !(assignment.teamId === params.teamId && removeSet.has(assignment.taskId))
     );
     this.state.tasks = this.state.tasks.filter(
       (task) => !(task.workspaceId === team.workspaceId && (!task.teamId || task.teamId === params.teamId) && removeSet.has(task.id))
     );
-    applyStickyForTeam(this.state, params.teamId);
+    applyStickyForTeam(this.state, params.teamId, undefined, touchedEmployeeIds);
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
@@ -588,10 +598,15 @@ export class LocalStore implements DataStore {
     assertEmployeeOwnScope(this.state, params.teamId, params.userId, role, params.assignmentIds);
 
     const removeSet = new Set(params.assignmentIds);
+    const touchedEmployeeIds = new Set(
+      this.state.assignments
+        .filter((assignment) => assignment.teamId === params.teamId && removeSet.has(assignment.id))
+        .map((assignment) => assignment.employeeId)
+    );
     this.state.assignments = this.state.assignments.filter(
       (assignment) => !(assignment.teamId === params.teamId && removeSet.has(assignment.id))
     );
-    applyStickyForTeam(this.state, params.teamId);
+    applyStickyForTeam(this.state, params.teamId, undefined, touchedEmployeeIds);
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
@@ -681,7 +696,7 @@ export class LocalStore implements DataStore {
     });
 
     this.state.assignments = this.state.assignments.map((item) => (item.id === target.id ? updated : item));
-    applyStickyForTeam(this.state, params.teamId, target.id);
+    applyStickyForTeam(this.state, params.teamId, target.id, [target.employeeId]);
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
@@ -738,7 +753,7 @@ export class LocalStore implements DataStore {
     });
 
     this.state.assignments.push(...copies);
-    applyStickyForTeam(this.state, params.teamId, copies[0]?.id);
+    applyStickyForTeam(this.state, params.teamId, copies[0]?.id, [params.targetEmployeeId]);
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
@@ -762,6 +777,10 @@ export class LocalStore implements DataStore {
 
     const now = new Date().toISOString();
     const byId = new Map(params.moves.map((move) => [move.assignmentId, move]));
+    const touchedEmployeeIds = new Set([
+      ...params.moves.map((move) => move.employeeId),
+      ...this.state.assignments.filter((assignment) => assignment.teamId === params.teamId && byId.has(assignment.id)).map((assignment) => assignment.employeeId)
+    ]);
 
     this.state.assignments = this.state.assignments.map((assignment) => {
       const move = byId.get(assignment.id);
@@ -777,7 +796,12 @@ export class LocalStore implements DataStore {
       });
     });
 
-    applyStickyForTeam(this.state, params.teamId, params.moves[0]?.assignmentId);
+    applyStickyForTeam(
+      this.state,
+      params.teamId,
+      params.moves[0]?.assignmentId,
+      touchedEmployeeIds
+    );
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
