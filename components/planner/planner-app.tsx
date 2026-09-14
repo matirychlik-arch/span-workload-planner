@@ -2252,7 +2252,16 @@ export function PlannerApp() {
           )}
         </aside>
 
-        <section className="planner-wrap" data-onboarding="timeline" ref={plannerWrapRef}>
+        <section
+          className="planner-wrap"
+          data-onboarding="timeline"
+          ref={plannerWrapRef}
+          onClick={(event) => {
+            if (event.target instanceof Element && event.target.closest('.task')) return;
+            setSelectedIds((current) => current.size ? new Set<string>() : current);
+            setSelectionMenu(null);
+          }}
+        >
           <div
             className="planner"
             style={
