@@ -646,18 +646,15 @@ export class SupabaseStore implements DataStore {
   }
 
   private async teamContext(teamId: string, userId: string): Promise<TeamContext> {
-    const { data: teamData, error: teamError } = await this.client
-      .from('teams')
-      .select('id, workspace_id, name, pm_user_id, edit_mode')
-      .eq('id', teamId)
-      .maybeSingle();
+    const [teamResult, memberResult] = await Promise.all([
+      this.client.from('teams').select('id, workspace_id, name, pm_user_id, edit_mode').eq('id', teamId).maybeSingle(),
+      this.client.from('team_members').select('team_id, user_id, role').eq('team_id', teamId)
+    ]);
+    const { data: teamData, error: teamError } = teamResult;
     if (teamError) throw new Error(teamError.message);
     if (!teamData) throw new Error('Nie znaleziono zespołu.');
 
-    const { data: memberData, error: memberError } = await this.client
-      .from('team_members')
-      .select('team_id, user_id, role')
-      .eq('team_id', teamId);
+    const { data: memberData, error: memberError } = memberResult;
     if (memberError) throw new Error(memberError.message);
 
     const team = toTeam(teamData as TeamRow);
@@ -737,11 +734,13 @@ export class SupabaseStore implements DataStore {
     await this.persistAssignments(changedAssignments(previous, resolved));
   }
 
-  private async snapshot(teamId: string, userId: string): Promise<PlannerSnapshot> {
-    const { team, members, role } = await this.teamContext(teamId, userId);
+  private async snapshot(teamId: string, userId: string, mutationContext?: TeamContext): Promise<PlannerSnapshot> {
+    // Reuse only the authorization already checked in this request, never
+    // cached membership from an earlier request. Mutations do not seed data.
+    const { team, members, role } = mutationContext ?? await this.teamContext(teamId, userId);
     const canEdit = role === 'admin' || role === 'pm' || (role === 'employee' && team.editMode === 'collaborative');
     const memberUserIds = members.map((member) => member.userId);
-    await this.ensureDefaultEpic(team.workspaceId, team.id);
+    if (!mutationContext) await this.ensureDefaultEpic(team.workspaceId, team.id);
 
     const [workspaceResult, usersResult, employeesResult, epicsResult, tasksResult, assignmentsResult] = await Promise.all([
       this.client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', team.workspaceId).single(),
@@ -822,31 +821,29 @@ export class SupabaseStore implements DataStore {
     targetDate: string;
     targetStartHour: number;
   }): Promise<PlannerSnapshot> {
-    await this.ensureUserWorkspaceAndSeed(params.userId);
-    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    const context = await this.teamContext(params.teamId, params.userId);
+    const { team, role } = context;
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, params.assignmentIds, params.targetEmployeeId);
     await this.assertEmployeeInTeam(params.teamId, params.targetEmployeeId);
 
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
-    const selected = allAssignments.filter((assignment) => params.assignmentIds.includes(assignment.id));
+    const movedIds = new Set(params.assignmentIds);
+    const selected = allAssignments.filter((assignment) => movedIds.has(assignment.id));
     const anchor = selected.find((assignment) => assignment.id === params.anchorAssignmentId);
     if (!anchor) throw new Error('Nie znaleziono zadania kotwiczacego.');
 
     const dayDelta = diffDays(anchor.startDate, params.targetDate);
     const hourDelta = params.targetStartHour - anchor.startHour;
 
-    const movedIds = new Set(params.assignmentIds);
     const nextAssignments = allAssignments.map((assignment) => {
       if (!movedIds.has(assignment.id)) return assignment;
-      const original = selected.find((item) => item.id === assignment.id);
-      if (!original) return assignment;
       return normalizeAssignment({
         ...assignment,
         employeeId: params.targetEmployeeId,
-        startDate: shiftIsoDate(original.startDate, dayDelta),
-        startHour: original.startHour + hourDelta,
-        desiredStartHour: original.startHour + hourDelta
+        startDate: shiftIsoDate(assignment.startDate, dayDelta),
+        startHour: assignment.startHour + hourDelta,
+        desiredStartHour: assignment.startHour + hourDelta
       });
     });
 
@@ -854,7 +851,7 @@ export class SupabaseStore implements DataStore {
     selected.forEach((assignment) => touchedEmployeeIds.add(assignment.employeeId));
     const resolved = resolveStickyForEmployees(nextAssignments, touchedEmployeeIds, params.anchorAssignmentId);
     await this.persistResolvedAssignments(allAssignments, resolved);
-    return this.snapshot(params.teamId, params.userId);
+    return this.snapshot(params.teamId, params.userId, context);
   }
 
   async createAssignment(params: {
@@ -867,8 +864,8 @@ export class SupabaseStore implements DataStore {
     durationHours?: number;
     durationDays?: number;
   }): Promise<PlannerSnapshot> {
-    await this.ensureUserWorkspaceAndSeed(params.userId);
-    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    const context = await this.teamContext(params.teamId, params.userId);
+    const { team, role } = context;
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, undefined, params.employeeId);
     await this.assertEmployeeInTeam(params.teamId, params.employeeId);
@@ -900,7 +897,7 @@ export class SupabaseStore implements DataStore {
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
     const resolved = resolveStickyForEmployees([...allAssignments, created], [created.employeeId], created.id);
     await this.persistResolvedAssignments(allAssignments, resolved);
-    return this.snapshot(params.teamId, params.userId);
+    return this.snapshot(params.teamId, params.userId, context);
   }
 
   async createManualTask(params: {
@@ -1413,8 +1410,8 @@ export class SupabaseStore implements DataStore {
     userId: string;
     assignmentIds: string[];
   }): Promise<PlannerSnapshot> {
-    await this.ensureUserWorkspaceAndSeed(params.userId);
-    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    const context = await this.teamContext(params.teamId, params.userId);
+    const { team, role } = context;
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, params.assignmentIds);
 
@@ -1432,7 +1429,7 @@ export class SupabaseStore implements DataStore {
     const remaining = allAssignments.filter((assignment) => !params.assignmentIds.includes(assignment.id));
     const resolved = resolveStickyForEmployees(remaining, touchedEmployeeIds);
     await this.persistResolvedAssignments(remaining, resolved);
-    return this.snapshot(params.teamId, params.userId);
+    return this.snapshot(params.teamId, params.userId, context);
   }
 
   async updateAssignmentsEpic(params: {
@@ -1539,8 +1536,8 @@ export class SupabaseStore implements DataStore {
     durationHours?: number;
     durationDays?: number;
   }): Promise<PlannerSnapshot> {
-    await this.ensureUserWorkspaceAndSeed(params.userId);
-    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    const context = await this.teamContext(params.teamId, params.userId);
+    const { team, role } = context;
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, [params.assignmentId]);
 
@@ -1557,7 +1554,7 @@ export class SupabaseStore implements DataStore {
     const nextAssignments = allAssignments.map((assignment) => (assignment.id === target.id ? updated : assignment));
     const resolved = resolveStickyForEmployees(nextAssignments, [target.employeeId], target.id);
     await this.persistResolvedAssignments(allAssignments, resolved);
-    return this.snapshot(params.teamId, params.userId);
+    return this.snapshot(params.teamId, params.userId, context);
   }
 
   async copyAssignments(params: {
@@ -1570,14 +1567,15 @@ export class SupabaseStore implements DataStore {
     targetStartHour: number;
     linkTasks?: boolean;
   }): Promise<PlannerSnapshot> {
-    await this.ensureUserWorkspaceAndSeed(params.userId);
-    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    const context = await this.teamContext(params.teamId, params.userId);
+    const { team, role } = context;
     assertCanEditTeam(role, team.editMode);
     await this.assertEmployeeOwnScope(params.teamId, params.userId, role, params.assignmentIds, params.targetEmployeeId);
     await this.assertEmployeeInTeam(params.teamId, params.targetEmployeeId);
 
     const allAssignments = await this.loadAssignmentsForTeam(params.teamId);
-    const selected = allAssignments.filter((assignment) => params.assignmentIds.includes(assignment.id));
+    const selectedIds = new Set(params.assignmentIds);
+    const selected = allAssignments.filter((assignment) => selectedIds.has(assignment.id));
     const anchor = selected.find((assignment) => assignment.id === params.anchorAssignmentId);
     if (!anchor) throw new Error('Nie znaleziono assignmentu kotwiczacego.');
 
@@ -1634,7 +1632,7 @@ export class SupabaseStore implements DataStore {
 
     const resolved = resolveStickyForEmployees([...allAssignments, ...copies], [params.targetEmployeeId], copies[0]?.id);
     await this.persistResolvedAssignments(allAssignments, resolved);
-    return this.snapshot(params.teamId, params.userId);
+    return this.snapshot(params.teamId, params.userId, context);
   }
 
   async bulkMoveAssignments(params: {
@@ -1642,8 +1640,8 @@ export class SupabaseStore implements DataStore {
     userId: string;
     moves: Array<{ assignmentId: string; employeeId: string; date: string; startHour: number }>;
   }): Promise<PlannerSnapshot> {
-    await this.ensureUserWorkspaceAndSeed(params.userId);
-    const { team, role } = await this.teamContext(params.teamId, params.userId);
+    const context = await this.teamContext(params.teamId, params.userId);
+    const { team, role } = context;
     assertCanEditTeam(role, team.editMode);
 
     await this.assertEmployeeOwnScope(
@@ -1652,9 +1650,9 @@ export class SupabaseStore implements DataStore {
       role,
       params.moves.map((item) => item.assignmentId)
     );
-    for (const move of params.moves) {
-      await this.assertEmployeeOwnScope(params.teamId, params.userId, role, undefined, move.employeeId);
-      await this.assertEmployeeInTeam(params.teamId, move.employeeId);
+    for (const employeeId of new Set(params.moves.map((move) => move.employeeId))) {
+      await this.assertEmployeeOwnScope(params.teamId, params.userId, role, undefined, employeeId);
+      await this.assertEmployeeInTeam(params.teamId, employeeId);
     }
 
     const moveMap = new Map(params.moves.map((move) => [move.assignmentId, move]));
@@ -1674,11 +1672,11 @@ export class SupabaseStore implements DataStore {
     const touchedEmployeeIds = new Set<string>();
     params.moves.forEach((move) => touchedEmployeeIds.add(move.employeeId));
     allAssignments.forEach((assignment) => {
-      if (params.moves.some((move) => move.assignmentId === assignment.id)) touchedEmployeeIds.add(assignment.employeeId);
+      if (moveMap.has(assignment.id)) touchedEmployeeIds.add(assignment.employeeId);
     });
     const resolved = resolveStickyForEmployees(nextAssignments, touchedEmployeeIds, params.moves[0]?.assignmentId);
     await this.persistResolvedAssignments(allAssignments, resolved);
-    return this.snapshot(params.teamId, params.userId);
+    return this.snapshot(params.teamId, params.userId, context);
   }
 
   async importFromJira(params: { teamId: string; userId: string; jql: string }): Promise<{ addedTasks: number; addedEpics: number }> {
