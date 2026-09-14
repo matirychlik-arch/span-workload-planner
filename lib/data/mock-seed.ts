@@ -27,7 +27,11 @@ export const seedEpics: Epic[] = [
   { id: 'ep-color-violet', workspaceId: seedWorkspace.id, name: 'Kolor 5', color: '#8A63D2' },
   { id: 'ep-color-mint', workspaceId: seedWorkspace.id, name: 'Kolor 6', color: '#4CA6A8' },
   { id: 'ep-color-pink', workspaceId: seedWorkspace.id, name: 'Kolor 7', color: '#D85A9A' },
-  { id: 'ep-color-slate', workspaceId: seedWorkspace.id, name: 'Kolor 8', color: '#64748B' }
+  { id: 'ep-color-slate', workspaceId: seedWorkspace.id, name: 'Kolor 8', color: '#64748B' },
+  { id: 'ep-color-red', workspaceId: seedWorkspace.id, name: 'Kolor 9', color: '#C94B4B' },
+  { id: 'ep-color-lime', workspaceId: seedWorkspace.id, name: 'Kolor 10', color: '#7A9F35' },
+  { id: 'ep-color-orange', workspaceId: seedWorkspace.id, name: 'Kolor 11', color: '#E47D30' },
+  { id: 'ep-color-graphite', workspaceId: seedWorkspace.id, name: 'Kolor 12', color: '#4B5563' }
 ];
 
 export const seedTasks: Task[] = [];

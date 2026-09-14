@@ -245,6 +245,7 @@ export interface DataStore {
     targetEmployeeId: string;
     targetDate: string;
     targetStartHour: number;
+    linkTasks?: boolean;
   }): Promise<PlannerSnapshot>;
   bulkMoveAssignments(params: {
     teamId: string;

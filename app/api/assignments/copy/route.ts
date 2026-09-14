@@ -9,7 +9,8 @@ const bodySchema = z.object({
   anchorAssignmentId: z.string().min(1),
   targetEmployeeId: z.string().min(1),
   targetDate: z.string().min(10),
-  targetStartHour: z.number().int().min(0).max(23)
+  targetStartHour: z.number().int().min(0).max(23),
+  linkTasks: z.boolean().optional()
 });
 
 export async function POST(request: Request) {

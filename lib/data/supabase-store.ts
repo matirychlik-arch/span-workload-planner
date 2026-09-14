@@ -1558,6 +1558,7 @@ export class SupabaseStore implements DataStore {
     targetEmployeeId: string;
     targetDate: string;
     targetStartHour: number;
+    linkTasks?: boolean;
   }): Promise<PlannerSnapshot> {
     await this.ensureUserWorkspaceAndSeed(params.userId);
     const { team, role } = await this.teamContext(params.teamId, params.userId);
@@ -1572,11 +1573,46 @@ export class SupabaseStore implements DataStore {
 
     const dayDelta = diffDays(anchor.startDate, params.targetDate);
     const hourDelta = params.targetStartHour - anchor.startHour;
+    const taskIdByOriginalAssignment = new Map<string, string>();
+
+    if (!params.linkTasks) {
+      const sourceTaskIds = Array.from(new Set(selected.map((assignment) => assignment.taskId)));
+      const { data: sourceTasks, error: sourceTasksError } = await this.client
+        .from('tasks')
+        .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
+        .eq('workspace_id', team.workspaceId)
+        .eq('team_id', params.teamId)
+        .in('id', sourceTaskIds);
+      if (sourceTasksError) throw new Error(sourceTasksError.message);
+
+      const taskById = new Map((sourceTasks as TaskRow[]).map((task) => [task.id, task]));
+      const taskRows: TaskRow[] = [];
+      selected.forEach((assignment) => {
+        const sourceTask = taskById.get(assignment.taskId);
+        if (!sourceTask) return;
+        const taskId = randomUUID();
+        taskIdByOriginalAssignment.set(assignment.id, taskId);
+        taskRows.push({
+          ...sourceTask,
+          id: taskId,
+          source: 'manual',
+          jira_issue_id: null,
+          jira_key: null,
+          url: null
+        });
+      });
+
+      if (taskRows.length) {
+        const { error: insertTasksError } = await this.client.from('tasks').insert(taskRows);
+        if (insertTasksError) throw new Error(insertTasksError.message);
+      }
+    }
 
     const copies = selected.map((assignment) =>
       normalizeAssignment({
         ...assignment,
         id: randomUUID(),
+        taskId: taskIdByOriginalAssignment.get(assignment.id) ?? assignment.taskId,
         employeeId: params.targetEmployeeId,
         startDate: shiftIsoDate(assignment.startDate, dayDelta),
         startHour: assignment.startHour + hourDelta,

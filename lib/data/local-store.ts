@@ -693,6 +693,7 @@ export class LocalStore implements DataStore {
     targetEmployeeId: string;
     targetDate: string;
     targetStartHour: number;
+    linkTasks?: boolean;
   }): Promise<PlannerSnapshot> {
     const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
     assertCanEditTeam(role, team.editMode);
@@ -707,18 +708,34 @@ export class LocalStore implements DataStore {
     const hourDelta = params.targetStartHour - anchorOriginal.startHour;
     const now = new Date().toISOString();
 
-    const copies = selected.map((original) =>
-      normalizedAssignment({
+    const copies = selected.map((original) => {
+      let taskId = original.taskId;
+      if (!params.linkTasks) {
+        const sourceTask = this.state.tasks.find((task) => task.id === original.taskId && task.workspaceId === team.workspaceId);
+        if (sourceTask) {
+          taskId = `task-${randomUUID()}`;
+          this.state.tasks.push({
+            ...sourceTask,
+            id: taskId,
+            source: 'manual',
+            jiraIssueId: undefined,
+            jiraKey: undefined,
+            url: undefined
+          });
+        }
+      }
+      return normalizedAssignment({
         ...original,
         id: `asn-${randomUUID()}`,
+        taskId,
         employeeId: params.targetEmployeeId,
         startDate: shiftIsoDate(original.startDate, dayDelta),
         startHour: original.startHour + hourDelta,
         desiredStartHour: original.startHour + hourDelta,
         version: 1,
         updatedAt: now
-      })
-    );
+      });
+    });
 
     this.state.assignments.push(...copies);
     applyStickyForTeam(this.state, params.teamId, copies[0]?.id);

@@ -110,6 +110,7 @@ const TIMELINE_SHIFT_DAYS = 14;
 const EDGE_THRESHOLD_DAYS = 3;
 const PERSON_TINTS = ['#EEF3FF', '#F6EFE8', '#EEF7EF', '#F2EDFA', '#FCF5E8', '#EBF4F4'];
 const EMPLOYEE_ORDER = ['marcin', 'mati', 'mateusz', 'pati', 'patrycja', 'adam'];
+const TASK_COLOR_NAMES = Array.from({ length: 12 }, (_, index) => `kolor ${index + 1}`);
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -166,14 +167,6 @@ function weekLabel(weekStartIso: string): string {
   return `${left} - ${right}`;
 }
 
-function endDate(assignment: Assignment): string {
-  return shiftIsoDate(assignment.startDate, (assignment.durationDays || 1) - 1);
-}
-
-function covers(assignment: Assignment, dateIso: string): boolean {
-  return diffDays(assignment.startDate, dateIso) >= 0 && diffDays(dateIso, endDate(assignment)) >= 0;
-}
-
 function assignmentSort(a: Assignment, b: Assignment): number {
   return (
     a.startHour - b.startHour ||
@@ -227,6 +220,10 @@ function taskDescription(task: Task): string {
   return description && description.toLowerCase() !== 'todo' ? description : '';
 }
 
+function normalizeColor(color: string): string {
+  return color.trim().toLowerCase();
+}
+
 function isTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName.toLowerCase();
@@ -274,6 +271,7 @@ export function PlannerApp() {
   const [cloudBackups, setCloudBackups] = useState<CloudBackupFile[]>([]);
   const [pendingCenterIso, setPendingCenterIso] = useState<string | null>(null);
   const [plannerZoom, setPlannerZoom] = useState<PlannerZoom>(DEFAULT_PLANNER_ZOOM);
+  const [copyLinkMode, setCopyLinkMode] = useState(false);
   const [focusWeekStartIso, setFocusWeekStartIso] = useState<string>(() => toIsoDate(startOfCurrentWeek()));
   const [timelineStartIso, setTimelineStartIso] = useState<string>(() => {
     const weekStart = startOfCurrentWeek();
@@ -293,6 +291,7 @@ export function PlannerApp() {
   const latestPlannerMutationErrorRef = useRef<string | null>(null);
   const copiedAssignmentIdsRef = useRef<string[]>([]);
   const pasteTargetRef = useRef<DropTarget | null>(null);
+  const dropPreviewKeyRef = useRef<string>('');
 
   const visibleDayCount = TIMELINE_BUFFER_DAYS;
   const dayWidth = BASE_DAY_WIDTH;
@@ -307,6 +306,20 @@ export function PlannerApp() {
     const map = new Map<string, Epic>();
     (snapshot?.epics ?? []).forEach((epic) => map.set(epic.id, epic));
     return map;
+  }, [snapshot?.epics]);
+
+  const colorPaletteEpics = useMemo(() => {
+    const epics = snapshot?.epics ?? [];
+    const bySystemName = new Map(epics.map((epic) => [epic.name.trim().toLowerCase(), epic]));
+    const systemPalette = TASK_COLOR_NAMES.map((name) => bySystemName.get(name)).filter((epic): epic is Epic => Boolean(epic));
+    if (systemPalette.length) return systemPalette;
+
+    const uniqueByColor = new Map<string, Epic>();
+    epics.forEach((epic) => {
+      const color = normalizeColor(epic.color);
+      if (!uniqueByColor.has(color)) uniqueByColor.set(color, epic);
+    });
+    return Array.from(uniqueByColor.values()).slice(0, 16);
   }, [snapshot?.epics]);
 
   const taskById = useMemo(() => {
@@ -329,6 +342,22 @@ export function PlannerApp() {
       };
     });
   }, [snapshot?.assignments, resizeDrafts]);
+
+  const assignmentsByCell = useMemo(() => {
+    const map = new Map<string, Assignment[]>();
+    assignmentsForRender.forEach((assignment) => {
+      const days = assignment.durationDays || 1;
+      for (let index = 0; index < days; index += 1) {
+        const date = shiftIsoDate(assignment.startDate, index);
+        const key = `${assignment.employeeId}|${date}`;
+        const list = map.get(key) ?? [];
+        list.push(assignment);
+        map.set(key, list);
+      }
+    });
+    map.forEach((list) => list.sort(assignmentSort));
+    return map;
+  }, [assignmentsForRender]);
 
   const selectedAssignments = useMemo(() => {
     return assignmentsForRender.filter((assignment) => selectedIds.has(assignment.id));
@@ -612,17 +641,16 @@ export function PlannerApp() {
 
   const getDayItems = useCallback(
     (employeeId: string, dateIso: string): Assignment[] => {
-      return assignmentsForRender
-        .filter((assignment) => assignment.employeeId === employeeId && covers(assignment, dateIso))
-        .sort(assignmentSort);
+      return assignmentsByCell.get(`${employeeId}|${dateIso}`) ?? [];
     },
-    [assignmentsForRender]
+    [assignmentsByCell]
   );
 
   const clearDropPreview = useCallback(() => {
     setDropPreview([]);
     setDropCellKey(null);
     pasteTargetRef.current = null;
+    dropPreviewKeyRef.current = '';
   }, []);
 
   const startHourFromPointer = useCallback(
@@ -736,11 +764,29 @@ export function PlannerApp() {
     [taskById, epicById]
   );
 
+  const showDropPreview = useCallback(
+    (cellKey: string, context: PlannerDragContext | null, target: DropTarget) => {
+      const contextKey =
+        context?.source === 'planner'
+          ? context.assignmentIds.join(',')
+          : context?.source === 'backlog'
+            ? context.taskId
+            : 'empty';
+      const nextKey = `${cellKey}|${target.startHour}|${contextKey}`;
+      if (dropPreviewKeyRef.current === nextKey) return;
+      dropPreviewKeyRef.current = nextKey;
+      setDropCellKey(cellKey);
+      setDropPreview(previewFromContext(context, target));
+    },
+    [previewFromContext]
+  );
+
   const buildOptimisticDropSnapshot = useCallback(
     (
       context: PlannerDragContext,
       target: DropTarget,
-      copyMode: boolean
+      copyMode: boolean,
+      linkTasks = false
     ): PlannerSnapshot | null => {
       if (!snapshot) return null;
       const now = new Date().toISOString();
@@ -775,9 +821,26 @@ export function PlannerApp() {
       const hourDelta = target.startHour - anchorOriginal.startHour;
 
       if (copyMode) {
+        const nowMs = Date.now();
+        const taskCopies: Task[] = [];
         const copies = context.originals.map((original, index) => ({
           ...original,
-          id: `optimistic-copy-${Date.now()}-${index}`,
+          id: `optimistic-copy-${nowMs}-${index}`,
+          taskId: (() => {
+            if (linkTasks) return original.taskId;
+            const sourceTask = taskById.get(original.taskId);
+            if (!sourceTask) return original.taskId;
+            const taskId = `optimistic-task-copy-${nowMs}-${index}`;
+            taskCopies.push({
+              ...sourceTask,
+              id: taskId,
+              source: 'manual',
+              jiraIssueId: undefined,
+              jiraKey: undefined,
+              url: undefined
+            });
+            return taskId;
+          })(),
           workspaceId: snapshot.workspace.id,
           teamId,
           employeeId: target.employeeId,
@@ -789,6 +852,7 @@ export function PlannerApp() {
         }));
         return {
           ...snapshot,
+          tasks: taskCopies.length ? [...snapshot.tasks, ...taskCopies] : snapshot.tasks,
           assignments: resolveSticky([...snapshot.assignments, ...copies], copies[0]?.id)
         };
       }
@@ -827,7 +891,7 @@ export function PlannerApp() {
       if (!canEdit || !teamId || !dragContext) return;
 
       const copyMode = event.altKey;
-      const optimisticSnapshot = buildOptimisticDropSnapshot(dragContext, target, copyMode);
+      const optimisticSnapshot = buildOptimisticDropSnapshot(dragContext, target, copyMode, copyMode && copyLinkMode);
       if (optimisticSnapshot) updateSnapshot(optimisticSnapshot);
 
       if (dragContext.source === 'backlog') {
@@ -863,7 +927,8 @@ export function PlannerApp() {
         anchorAssignmentId: dragContext.anchorAssignmentId,
         targetEmployeeId: target.employeeId,
         targetDate: target.date,
-        targetStartHour: target.startHour
+        targetStartHour: target.startHour,
+        linkTasks: copyMode && copyLinkMode
       };
       const endpoint = copyMode ? '/api/assignments/copy' : '/api/assignments/move';
       queuePlannerCommit(
@@ -878,7 +943,7 @@ export function PlannerApp() {
       setDragContext(null);
       clearDropPreview();
     },
-    [buildOptimisticDropSnapshot, canEdit, clearDropPreview, dragContext, queuePlannerCommit, teamId, updateSnapshot]
+    [buildOptimisticDropSnapshot, canEdit, clearDropPreview, copyLinkMode, dragContext, queuePlannerCommit, teamId, updateSnapshot]
   );
 
   const handleDelete = useCallback(
@@ -936,7 +1001,7 @@ export function PlannerApp() {
       setError('Najedź na miejsce w kalendarzu i wtedy wklej skopiowany task.');
       return;
     }
-    const optimisticSnapshot = buildOptimisticDropSnapshot(context, target, true);
+    const optimisticSnapshot = buildOptimisticDropSnapshot(context, target, true, copyLinkMode);
     if (optimisticSnapshot) updateSnapshot(optimisticSnapshot);
 
     queuePlannerCommit(
@@ -949,14 +1014,15 @@ export function PlannerApp() {
             anchorAssignmentId: context.anchorAssignmentId,
             targetEmployeeId: target.employeeId,
             targetDate: target.date,
-            targetStartHour: target.startHour
+            targetStartHour: target.startHour,
+            linkTasks: copyLinkMode
           })
         }),
       'Błąd podczas wklejania.'
     );
     setSelectedIds(new Set());
     clearDropPreview();
-  }, [buildCopiedDragContext, buildOptimisticDropSnapshot, canEdit, clearDropPreview, queuePlannerCommit, snapshot, teamId, updateSnapshot]);
+  }, [buildCopiedDragContext, buildOptimisticDropSnapshot, canEdit, clearDropPreview, copyLinkMode, queuePlannerCommit, snapshot, teamId, updateSnapshot]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1223,7 +1289,7 @@ export function PlannerApp() {
       try {
         setError('');
         if (snapshot) {
-          const fallbackEpicId = manualEpicId || snapshot.epics[0]?.id;
+          const fallbackEpicId = manualEpicId || colorPaletteEpics[0]?.id || snapshot.epics[0]?.id;
           if (fallbackEpicId) {
             updateSnapshot({
               ...snapshot,
@@ -1262,7 +1328,7 @@ export function PlannerApp() {
         setError(message);
       }
     },
-    [canEdit, manualEpicId, manualTaskDescription, manualTaskTitle, snapshot, teamId, updateSnapshot]
+    [canEdit, colorPaletteEpics, manualEpicId, manualTaskDescription, manualTaskTitle, snapshot, teamId, updateSnapshot]
   );
 
   const handleImportJira = useCallback(async () => {
@@ -1879,6 +1945,18 @@ export function PlannerApp() {
                 +
               </button>
             </div>
+            <button
+              className={`secondary copy-mode-btn ${copyLinkMode ? 'active' : ''}`}
+              type="button"
+              onClick={() => setCopyLinkMode((current) => !current)}
+              title={
+                copyLinkMode
+                  ? 'Kopie połączone: edycja jednego taska zmieni wszystkie jego instancje.'
+                  : 'Kopie osobne: wklejony task można edytować niezależnie.'
+              }
+            >
+              Kopie: {copyLinkMode ? 'połączone' : 'osobne'}
+            </button>
             <button className="secondary today-btn" onClick={goToday}>
               Dzisiaj
             </button>
@@ -1926,7 +2004,7 @@ export function PlannerApp() {
               </div>
               <div className="selection-subtitle mono">Paleta kolorów</div>
               <div className="selection-epics">
-                {snapshot.epics.map((epic, index) => {
+                {colorPaletteEpics.map((epic, index) => {
                   const isActive = taskEditDraft.epicId === epic.id;
                   return (
                     <button
@@ -1968,7 +2046,7 @@ export function PlannerApp() {
                 </button>
               </div>
               <div className="selection-epics">
-                {snapshot.epics.map((epic, index) => {
+                {colorPaletteEpics.map((epic, index) => {
                   const isActive = selectedEpicIds.size === 1 && selectedEpicIds.has(epic.id);
                   return (
                     <button
@@ -2206,8 +2284,7 @@ export function PlannerApp() {
                             const startHour = startHourFromPointer(event.clientY, event.currentTarget);
                             const target = { employeeId: employee.id, date, startHour };
                             pasteTargetRef.current = target;
-                            setDropCellKey(cellKey);
-                            setDropPreview(previewFromContext(context, target));
+                            showDropPreview(cellKey, context, target);
                           }}
                           onMouseLeave={() => {
                             if (!dragContext) clearDropPreview();
@@ -2219,8 +2296,7 @@ export function PlannerApp() {
                             if (dragContext?.source === 'planner' && event.dataTransfer) {
                               event.dataTransfer.dropEffect = event.altKey ? 'copy' : 'move';
                             }
-                            setDropCellKey(cellKey);
-                            setDropPreview(previewFromContext(dragContext, { employeeId: employee.id, date, startHour }));
+                            showDropPreview(cellKey, dragContext, { employeeId: employee.id, date, startHour });
                           }}
                           onDragLeave={() => {
                             clearDropPreview();

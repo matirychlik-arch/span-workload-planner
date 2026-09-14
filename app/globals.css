@@ -304,6 +304,16 @@ button.secondary {
   overflow: hidden;
 }
 
+.copy-mode-btn {
+  min-width: 132px;
+}
+
+.copy-mode-btn.active {
+  border-color: color-mix(in srgb, var(--blue) 42%, var(--line));
+  background: color-mix(in srgb, var(--blue) 10%, #fff);
+  color: var(--blue);
+}
+
 .zoom-btn {
   border: 0;
   border-radius: 0;
