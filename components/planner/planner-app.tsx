@@ -290,6 +290,7 @@ export function PlannerApp() {
   const pendingPlannerMutationCountRef = useRef(0);
   const latestPlannerMutationErrorRef = useRef<string | null>(null);
   const copiedAssignmentIdsRef = useRef<string[]>([]);
+  const pastePreviewActiveRef = useRef(false);
   const pasteTargetRef = useRef<DropTarget | null>(null);
   const dropPreviewKeyRef = useRef<string>('');
 
@@ -1004,6 +1005,7 @@ export function PlannerApp() {
     if (!selectedIds.size) return;
     const readyIds = Array.from(selectedIds).filter((id) => !isOptimisticId(id));
     copiedAssignmentIdsRef.current = readyIds;
+    pastePreviewActiveRef.current = readyIds.length > 0;
   }, [selectedIds]);
 
   const handlePasteAssignments = useCallback(() => {
@@ -1041,6 +1043,7 @@ export function PlannerApp() {
         }),
       'Błąd podczas wklejania.'
     );
+    pastePreviewActiveRef.current = false;
     setSelectedIds(new Set());
     clearDropPreview();
   }, [buildCopiedDragContext, buildOptimisticDropSnapshot, canEdit, clearDropPreview, copyLinkMode, queuePlannerCommit, snapshot, teamId, updateSnapshot]);
@@ -2312,6 +2315,7 @@ export function PlannerApp() {
                             const startHour = startHourFromPointer(event.clientY, event.currentTarget);
                             const target = { employeeId: employee.id, date, startHour };
                             pasteTargetRef.current = target;
+                            if (!pastePreviewActiveRef.current) return;
                             showDropPreview(cellKey, context, target);
                           }}
                           onMouseLeave={() => {
