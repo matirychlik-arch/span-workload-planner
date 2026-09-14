@@ -328,6 +328,22 @@ export function PlannerApp() {
     return map;
   }, [snapshot?.tasks]);
 
+  const assignmentById = useMemo(
+    () => new Map((snapshot?.assignments ?? []).map((assignment) => [assignment.id, assignment])),
+    [snapshot?.assignments]
+  );
+
+  const dropPreviewByCell = useMemo(() => {
+    const map = new Map<string, DropPreview[]>();
+    for (const preview of dropPreview) {
+      const key = `${preview.employeeId}|${preview.date}`;
+      const items = map.get(key) ?? [];
+      items.push(preview);
+      map.set(key, items);
+    }
+    return map;
+  }, [dropPreview]);
+
   const canEdit = Boolean(snapshot?.canEdit);
   const canImportExternal = snapshot?.currentRole === 'admin' || snapshot?.currentRole === 'pm';
 
@@ -666,7 +682,7 @@ export function PlannerApp() {
       const useSelection = selectedIds.has(anchor.id) && selectedIds.size > 1;
       const assignmentIds = useSelection ? Array.from(selectedIds) : [anchor.id];
       const originals = assignmentIds
-        .map((id) => snapshot?.assignments.find((assignment) => assignment.id === id))
+        .map((id) => assignmentById.get(id))
         .filter((item): item is Assignment => Boolean(item))
         .map((item) => ({
           id: item.id,
@@ -684,27 +700,24 @@ export function PlannerApp() {
         originals
       };
     },
-    [selectedIds, snapshot?.assignments]
+    [selectedIds, assignmentById]
   );
 
-  const buildCopiedDragContext = useCallback((): PlannerDragContext | null => {
-    if (!snapshot) return null;
-    const assignmentIds = copiedAssignmentIdsRef.current.filter((id) =>
-      snapshot.assignments.some((assignment) => assignment.id === id)
-    );
-    if (!assignmentIds.length) return null;
-
-    const anchor = snapshot.assignments.find((assignment) => assignment.id === assignmentIds[0]);
-    if (!anchor) return null;
-
-    return {
-      source: 'planner',
-      anchorAssignmentId: anchor.id,
-      assignmentIds,
-      originals: assignmentIds
-        .map((id) => snapshot.assignments.find((assignment) => assignment.id === id))
-        .filter((item): item is Assignment => Boolean(item))
-        .map((assignment) => ({
+  const buildCopiedDragContext = useMemo(() => {
+    let cachedIds: string[] | undefined;
+    let cachedContext: PlannerDragContext | null = null;
+    return (): PlannerDragContext | null => {
+      const copiedIds = copiedAssignmentIdsRef.current;
+      if (cachedIds === copiedIds) return cachedContext;
+      cachedIds = copiedIds;
+      const originals = copiedIds
+        .map((id) => assignmentById.get(id))
+        .filter((item): item is Assignment => Boolean(item));
+      cachedContext = originals.length ? {
+        source: 'planner',
+        anchorAssignmentId: originals[0].id,
+        assignmentIds: originals.map((item) => item.id),
+        originals: originals.map((assignment) => ({
           id: assignment.id,
           taskId: assignment.taskId,
           employeeId: assignment.employeeId,
@@ -713,8 +726,10 @@ export function PlannerApp() {
           durationHours: assignment.durationHours,
           durationDays: assignment.durationDays
         }))
+      } : null;
+      return cachedContext;
     };
-  }, [snapshot]);
+  }, [assignmentById]);
 
   const previewFromContext = useCallback(
     (
@@ -2320,9 +2335,7 @@ export function PlannerApp() {
                           }}
                         />
 
-                        {dropPreview
-                          .filter((preview) => preview.employeeId === employee.id && preview.date === date)
-                          .map((preview, index) => (
+                        {(dropPreviewByCell.get(cellKey) ?? []).map((preview, index) => (
                             <div
                               key={`preview-${index}-${preview.employeeId}-${preview.date}-${preview.startHour}`}
                               className="drop-preview"

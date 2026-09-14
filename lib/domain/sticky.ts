@@ -3,7 +3,6 @@ import {
   clamp,
   DAY_END_HOUR,
   DAY_START_HOUR,
-  diffDays,
   MAX_DURATION_DAYS
 } from '@/lib/domain/time';
 
@@ -25,27 +24,7 @@ function assignmentEndHour(assignment: Assignment): number {
   return assignment.startHour + assignment.durationHours;
 }
 
-function assignmentEndDate(assignment: Assignment): string {
-  const endOffset = Math.max(0, assignment.durationDays - 1);
-  const date = new Date(`${assignment.startDate}T12:00:00`);
-  date.setDate(date.getDate() + endOffset);
-  return date.toISOString().slice(0, 10);
-}
-
-function dateRangesOverlap(a: Assignment, b: Assignment): boolean {
-  return diffDays(a.startDate, assignmentEndDate(b)) >= 0 && diffDays(b.startDate, assignmentEndDate(a)) >= 0;
-}
-
-function timeRangesOverlap(a: Assignment, b: Assignment): boolean {
-  return a.startHour < assignmentEndHour(b) && b.startHour < assignmentEndHour(a);
-}
-
-function assignmentsOverlap(a: Assignment, b: Assignment): boolean {
-  return a.employeeId === b.employeeId && dateRangesOverlap(a, b) && timeRangesOverlap(a, b);
-}
-
-function pushAfter(candidate: Assignment, blockers: Assignment[]): Assignment {
-  const nextStart = Math.max(...blockers.map(assignmentEndHour));
+function pushAfter(candidate: Assignment, nextStart: number): Assignment {
   const adjusted = { ...candidate };
   adjusted.startHour = Math.min(nextStart, DAY_END_HOUR - 1);
   adjusted.durationHours = Math.max(1, Math.min(adjusted.durationHours, DAY_END_HOUR - adjusted.startHour));
@@ -70,19 +49,49 @@ export function resolveStickyForEmployee(assignments: Assignment[], pinnedAssign
     : [...normalized].sort(sortAssignments);
 
   const placed: Assignment[] = [];
+  // Each occupied hour stores the latest blocker end. Checking a block now
+  // depends on its span (at most 10 days x 8 hours), not the planner's history.
+  const occupancy = new Map<string, Map<number, number[]>>();
   for (const item of ordered) {
+    let employeeDays = occupancy.get(item.employeeId);
+    if (!employeeDays) {
+      employeeDays = new Map();
+      occupancy.set(item.employeeId, employeeDays);
+    }
+    const firstDay = Date.parse(`${item.startDate}T00:00:00Z`) / 86_400_000;
+    const days = Array.from({ length: item.durationDays }, (_, offset) => {
+      const day = firstDay + offset;
+      let hours = employeeDays.get(day);
+      if (!hours) {
+        hours = Array<number>(DAY_END_HOUR - DAY_START_HOUR).fill(0);
+        employeeDays.set(day, hours);
+      }
+      return hours;
+    });
     let candidate = {
       ...item,
       startHour: clamp(item.desiredStartHour || item.startHour, DAY_START_HOUR, DAY_END_HOUR - 1)
     };
     candidate.durationHours = Math.max(1, Math.min(candidate.durationHours, DAY_END_HOUR - candidate.startHour));
 
-    let blockers = placed.filter((existing) => assignmentsOverlap(candidate, existing));
-    let guard = 0;
-    while (blockers.length > 0 && guard < ordered.length + 2) {
-      candidate = pushAfter(candidate, blockers);
-      blockers = placed.filter((existing) => assignmentsOverlap(candidate, existing));
-      guard += 1;
+    while (true) {
+      let blockerEnd = 0;
+      for (const hours of days) {
+        for (let hour = candidate.startHour; hour < assignmentEndHour(candidate); hour += 1) {
+          blockerEnd = Math.max(blockerEnd, hours[hour - DAY_START_HOUR]);
+        }
+      }
+      if (!blockerEnd) break;
+      const next = pushAfter(candidate, blockerEnd);
+      // At the end of a full day the old loop repeated the same collision
+      // once per assignment. Keep its final placement without retrying it.
+      if (next.startHour === candidate.startHour && next.durationHours === candidate.durationHours) break;
+      candidate = next;
+    }
+    for (const hours of days) {
+      for (let hour = candidate.startHour; hour < assignmentEndHour(candidate); hour += 1) {
+        hours[hour - DAY_START_HOUR] = Math.max(hours[hour - DAY_START_HOUR], assignmentEndHour(candidate));
+      }
     }
     placed.push(candidate);
   }
