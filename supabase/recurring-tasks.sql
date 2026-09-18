@@ -1,4 +1,5 @@
--- Run once in Supabase SQL Editor before deploying recurrence support.
+-- Run in Supabase SQL Editor before deploying recurrence support.
+-- Safe to rerun to upgrade existing daily/weekday rules with weekly/monthly support.
 begin;
 alter table public.tasks add column if not exists kind text not null default 'task'
   check (kind in ('task', 'meeting'));
@@ -12,11 +13,14 @@ create table if not exists public.assignment_recurrences (
   start_date date not null,
   start_hour integer not null check (start_hour between 8 and 15),
   duration_hours integer not null check (duration_hours between 1 and 8 and start_hour + duration_hours <= 16),
-  frequency text not null check (frequency in ('daily', 'weekdays')),
+  frequency text not null check (frequency in ('daily', 'weekdays', 'weekly', 'monthly')),
   until_date date check (until_date is null or until_date >= start_date),
   -- Keep dates even after deleting/moving an occurrence: it must not reappear.
   generated_dates date[] not null default '{}'
 );
+alter table public.assignment_recurrences drop constraint if exists assignment_recurrences_frequency_check;
+alter table public.assignment_recurrences add constraint assignment_recurrences_frequency_check
+  check (frequency in ('daily', 'weekdays', 'weekly', 'monthly'));
 alter table public.assignment_recurrences enable row level security;
 revoke all on public.assignment_recurrences from anon, authenticated;
 grant all on public.assignment_recurrences to service_role;
@@ -43,6 +47,10 @@ begin
       from generate_series(0, least(coalesce(r.until_date, p_to), p_to) - greatest(r.start_date, p_from)) n
     loop
       if d = any(r.generated_dates) or (r.frequency = 'weekdays' and extract(isodow from d) > 5) then continue; end if;
+      if r.frequency = 'weekly' and (d - r.start_date) % 7 <> 0 then continue; end if;
+      -- Always anchor to the original day, so Jan 31 -> Feb 28 -> Mar 31.
+      if r.frequency = 'monthly' and extract(day from d) <> least(extract(day from r.start_date),
+        extract(day from (date_trunc('month', d::timestamp) + interval '1 month - 1 day'))) then continue; end if;
       insert into public.assignments(workspace_id, team_id, task_id, employee_id,
         start_date, start_hour, desired_start_hour, duration_hours, duration_days, recurrence_id)
       values(r.workspace_id, r.team_id, r.task_id, r.employee_id, d, r.start_hour, r.start_hour, r.duration_hours, 1, r.id);
@@ -66,7 +74,7 @@ begin
   if not exists(select 1 from public.employees e where e.id = a.employee_id and e.team_id = p_team and e.active
     and (role_name <> 'employee' or e.user_id = p_user)) then raise exception 'Brak uprawnien do pracownika'; end if;
   if a.recurrence_id is not null then return a.recurrence_id; end if;
-  if a.duration_days <> 1 or p_frequency not in ('daily', 'weekdays') or p_frequency is null
+  if a.duration_days <> 1 or p_frequency not in ('daily', 'weekdays', 'weekly', 'monthly') or p_frequency is null
     or (p_until is not null and p_until < a.start_date) then raise exception 'Nieprawidlowa regula powtarzania'; end if;
   insert into public.assignment_recurrences(workspace_id, team_id, task_id, employee_id,
     start_date, start_hour, duration_hours, frequency, until_date, generated_dates)

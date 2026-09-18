@@ -22,6 +22,21 @@ test('recurrence dates stay continuous at DST, leap day and year boundary', () =
     ['2026-12-31','2027-01-02',['2026-12-31','2027-01-01','2027-01-02']]
   ]) assert.deepEqual(recurrenceDates({ ...rule, startDate: from }, from, to), expected);
 });
+test('weekly recurrence keeps its original weekday across DST, windows and end dates', () => {
+  const weekly = { ...rule, frequency: 'weekly', startDate: '2026-10-18' };
+  assert.deepEqual(recurrenceDates(weekly, '2026-10-19', '2026-11-02'), ['2026-10-25','2026-11-01']);
+  assert.deepEqual(recurrenceDates({ ...weekly, until: '2026-10-25' }, '2026-10-19', '2026-11-02'), ['2026-10-25']);
+  assert.deepEqual(recurrenceDates({ ...weekly, generatedDates: ['2026-10-25'] }, '2026-10-19', '2026-11-02'), ['2026-11-01']);
+  assert.deepEqual(recurrenceDates({ ...weekly, startDate: '2026-12-25' }, '2026-12-26', '2027-01-09'), ['2027-01-01','2027-01-08']);
+});
+test('monthly recurrence clamps short months without drifting its original date', () => {
+  const monthly = { ...rule, frequency: 'monthly', startDate: '2027-01-31' };
+  assert.deepEqual(recurrenceDates(monthly, '2027-01-31', '2027-04-30'), ['2027-01-31','2027-02-28','2027-03-31','2027-04-30']);
+  assert.deepEqual(recurrenceDates(monthly, '2028-02-01', '2028-03-31'), ['2028-02-29','2028-03-31']);
+  assert.deepEqual(recurrenceDates({ ...monthly, until:'2027-02-28' }, '2027-02-01', '2027-03-31'), ['2027-02-28']);
+  assert.deepEqual(recurrenceDates({ ...monthly, generatedDates:['2027-02-28'] }, '2027-02-01', '2027-03-31'), ['2027-03-31']);
+  assert.deepEqual(recurrenceDates({ ...monthly, startDate:'2026-12-15' }, '2026-12-16', '2027-02-15'), ['2027-01-15','2027-02-15']);
+});
 test('invalid dates, unbounded request windows and multi-day cycles are rejected', () => {
   assert.equal(validCalendarDate('2026-02-30'), false);
   assert.equal(validCalendarDate('2028-02-29'), true);

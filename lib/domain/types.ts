@@ -2,7 +2,7 @@ export type UserRole = 'admin' | 'pm' | 'employee';
 export type TeamEditMode = 'collaborative' | 'pm_only';
 export type TaskSource = 'jira' | 'manual';
 export type TaskKind = 'task' | 'meeting';
-export type RepeatFrequency = 'daily' | 'weekdays';
+export type RepeatFrequency = 'daily' | 'weekdays' | 'weekly' | 'monthly';
 
 export interface RecurrenceRule {
   id: string;

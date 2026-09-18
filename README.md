@@ -46,7 +46,9 @@ Tryb integracyjny:
 Migracja dodaje dane bez usuwania istniejących tasków. Przy nowej instalacji uruchom ją po `supabase/schema.sql`.
 
 - Przy tworzeniu lub edycji taska dostępny jest typ **Task / Spotkanie**. Spotkania mają subtelną przerywaną obwódkę, niezależnie od koloru.
-- Prawy przycisk na jednodniowym bloku → **Powtarzanie** → codziennie lub poniedziałek–piątek → **Bez końca** lub **W wybranym dniu**. Wybrany ostatni dzień jest wliczony.
+- Prawy przycisk na jednodniowym bloku → **Powtarzanie** → codziennie, poniedziałek–piątek, co tydzień lub co miesiąc → **Bez końca** lub **W wybranym dniu**. Wybrany ostatni dzień jest wliczony.
+- Co tydzień: dzień tygodnia pierwszego bloku. Co miesiąc: dzień miesiąca pierwszego bloku, a w krótszym miesiącu jego ostatni dzień (31 stycznia → 28/29 lutego → 31 marca), także w weekendy.
+- Przy aktualizacji ze starszej wersji cykli uruchom ponownie aktualny `supabase/recurring-tasks.sql` przed pushem. Zachowuje istniejące serie, wystąpienia i wyjątki.
 - Cykl zachowuje pracownika, godzinę i długość pierwszego bloku. Kolejne daty powstają przy otwieraniu okresu kalendarza; seria bez końca nie ma ukrytego terminu wygaśnięcia.
 - Przesunięcie, zmiana długości i Delete dotyczą jednego wystąpienia. Usunięte/przeniesione wystąpienia nie odtwarzają się przy odświeżeniu.
 - Nazwa, opis, kolor i typ są wspólne dla wystąpień cyklu. Zwykłe kopiowanie tworzy osobny task, nie nowy cykl.

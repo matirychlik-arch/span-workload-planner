@@ -6,7 +6,7 @@ import { validCalendarDate } from '@/lib/domain/recurrence';
 
 const identifiers = z.object({ teamId: z.string().min(1), assignmentId: z.string().min(1) });
 const createSchema = identifiers.extend({
-  frequency: z.enum(['daily', 'weekdays']),
+  frequency: z.enum(['daily', 'weekdays', 'weekly', 'monthly']),
   until: z.string().refine(validCalendarDate).nullable()
 });
 

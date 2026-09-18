@@ -2603,6 +2603,7 @@ export function PlannerApp() {
                 <select aria-label="Częstotliwość" disabled={repeatSaving || Boolean(repeatRule)} value={repeatDraft.frequency}
                   onChange={(event) => setRepeatDraft({ ...repeatDraft, frequency: event.target.value as RepeatFrequency })}>
                   <option value="daily">Codziennie</option><option value="weekdays">W dni robocze (pon.–pt.)</option>
+                  <option value="weekly">Co tydzień</option><option value="monthly">Co miesiąc</option>
                 </select>
               </label>
               <label>Koniec

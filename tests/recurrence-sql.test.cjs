@@ -73,7 +73,7 @@ test('SQL rejects outsiders, pm-only employees, other employees and invalid rule
   await assert.rejects(create());
   await db.query('update assignments set employee_id=$1',[employee]);
   await assert.rejects(create('daily','2026-09-17'));
-  await assert.rejects(create('weekly'));
+  await assert.rejects(create('yearly'));
   await db.exec('update assignments set duration_days=2');
   await assert.rejects(create());
   assert.equal((await db.query('select * from assignment_recurrences')).rows.length,0);
@@ -104,4 +104,43 @@ test('SQL rejects oversized windows and cascades rules with deleted task', async
   await materialize();
   assert.equal((await rows()).length,0);
   assert.equal((await db.query('select * from assignment_recurrences')).rows.length,0);
+});
+test('SQL weekly cycles keep weekday and time across DST, honor inclusive end and stop', async () => {
+  await db.exec("update assignments set start_date='2026-10-18'");
+  await create('weekly', '2026-11-01');
+  await materialize('2026-10-19','2026-11-09');
+  assert.deepEqual((await rows()).map(r=>r.date),['2026-10-18','2026-10-25','2026-11-01']);
+  assert.ok((await rows()).every(r=>r.start_hour===10));
+  await stop((await rows()).find(r=>r.date==='2026-10-25').id);
+  await materialize('2026-10-19','2026-11-09');
+  assert.deepEqual((await rows()).map(r=>r.date),['2026-10-18','2026-10-25']);
+});
+test('SQL monthly cycles clamp short months, restore day 31 and support no end in leap years', async () => {
+  await db.exec("update assignments set start_date='2027-01-31'");
+  await create('monthly');
+  await materialize('2027-01-31','2027-04-30');
+  assert.deepEqual((await rows()).map(r=>r.date),['2027-01-31','2027-02-28','2027-03-31','2027-04-30']);
+  await materialize('2028-02-01','2028-03-31');
+  assert.deepEqual((await rows()).slice(-2).map(r=>r.date),['2028-02-29','2028-03-31']);
+  await db.exec("delete from assignments where start_date='2027-02-28'; update assignments set start_date='2027-03-29' where start_date='2027-03-31'");
+  await materialize('2027-01-31','2027-04-30');
+  assert.deepEqual((await rows()).slice(0,3).map(r=>r.date),['2027-01-31','2027-03-29','2027-04-30']);
+});
+test('SQL monthly cycles honor the inclusive end date and original day over new year', async () => {
+  await db.exec("update assignments set start_date='2026-12-15'");
+  await create('monthly','2027-02-15');
+  await materialize('2026-12-16','2027-03-20');
+  assert.deepEqual((await rows()).map(r=>r.date),['2026-12-15','2027-01-15','2027-02-15']);
+});
+test('SQL upgrade from old frequency constraint preserves existing series and deletion exceptions', async () => {
+  await create(); await materialize();
+  await db.exec("delete from assignments where start_date='2026-09-19'; alter table assignment_recurrences drop constraint assignment_recurrences_frequency_check; alter table assignment_recurrences add constraint assignment_recurrences_frequency_check check (frequency in ('daily','weekdays'));");
+  const before = await rows();
+  const rulesBefore = (await db.query('select * from assignment_recurrences')).rows;
+  await db.exec(fs.readFileSync(path.join(root,'supabase/recurring-tasks.sql'),'utf8'));
+  await materialize();
+  assert.deepEqual(await rows(),before);
+  assert.deepEqual((await db.query('select * from assignment_recurrences')).rows,rulesBefore);
+  await db.exec("update assignment_recurrences set frequency='weekly'");
+  await db.exec("update assignment_recurrences set frequency='monthly'");
 });

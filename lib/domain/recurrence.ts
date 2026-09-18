@@ -13,10 +13,18 @@ export function recurrenceDates(rule: RecurrenceRule, from: string, to: string):
   const start = from > rule.startDate ? from : rule.startDate;
   const end = rule.until && rule.until < to ? rule.until : to;
   const generated = new Set(rule.generatedDates);
+  const anchor = parseIsoDate(rule.startDate);
   const dates: string[] = [];
   for (let date = start; date <= end; date = shiftIsoDate(date, 1)) {
-    const day = parseIsoDate(date).getDay();
-    if (!generated.has(date) && (rule.frequency === 'daily' || (day !== 0 && day !== 6))) dates.push(date);
+    if (generated.has(date)) continue;
+    const current = parseIsoDate(date);
+    const day = current.getDay();
+    const lastDay = new Date(current.getFullYear(), current.getMonth() + 1, 0).getDate();
+    const matches = rule.frequency === 'daily' ||
+      (rule.frequency === 'weekdays' && day !== 0 && day !== 6) ||
+      (rule.frequency === 'weekly' && day === anchor.getDay()) ||
+      (rule.frequency === 'monthly' && current.getDate() === Math.min(anchor.getDate(), lastDay));
+    if (matches) dates.push(date);
   }
   return dates;
 }
