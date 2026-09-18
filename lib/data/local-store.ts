@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import type { TaskKind, RepeatFrequency, RecurrenceRule } from '@/lib/domain/types';
+import { recurrenceDates, validateRecurrence } from '@/lib/domain/recurrence';
 import { seedAssignments, seedEmployees, seedEpics, seedTasks, seedTeamMembers, seedTeams, seedUsers, seedWorkspace } from '@/lib/data/mock-seed';
 import { resolveSticky, resolveStickyForEmployees } from '@/lib/domain/sticky';
 import { Assignment, DataStore, ExcelImportResult, PlannerBackup, PlannerSnapshot, Team, TeamEditMode, TeamMember, UserRole } from '@/lib/domain/types';
@@ -10,6 +12,7 @@ import { fetchJiraIssues } from '@/lib/integrations/jira';
 const EXCEL_IMPORT_START_HOUR = 8;
 
 type LocalState = {
+  recurrences: RecurrenceRule[];
   workspace: typeof seedWorkspace;
   users: typeof seedUsers;
   teams: typeof seedTeams;
@@ -118,6 +121,7 @@ function snapshotForTeam(state: LocalState, teamId: string, userId: string): Pla
   const employeeIds = new Set(state.employees.filter((item) => item.teamId === teamId && item.active).map((item) => item.id));
   return {
     workspace: clone(state.workspace),
+    recurrences: clone(state.recurrences.filter((rule) => rule.teamId === teamId)),
     team: clone(team),
     members: clone(members),
     users: clone(state.users),
@@ -140,6 +144,7 @@ export class LocalStore implements DataStore {
 
   constructor() {
     this.state = {
+      recurrences: [],
       workspace: clone(seedWorkspace),
       users: clone(seedUsers),
       teams: clone(seedTeams),
@@ -165,6 +170,59 @@ export class LocalStore implements DataStore {
   }
 
   async getPlannerSnapshot(params: { teamId: string; userId: string; from: string; to: string }): Promise<PlannerSnapshot> {
+    roleTeamAndMembers(this.state, params.teamId, params.userId);
+    this.materializeRecurrences(params.teamId, params.from, params.to);
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  private materializeRecurrences(teamId: string, from: string, to: string): void {
+    for (const rule of this.state.recurrences.filter((item) => item.teamId === teamId)) {
+      if (!this.state.employees.some((item) => item.id === rule.employeeId && item.active)) continue;
+      for (const date of recurrenceDates(rule, from, to)) {
+        this.state.assignments.push({ id: randomUUID(), workspaceId: rule.workspaceId, teamId, taskId: rule.taskId,
+          employeeId: rule.employeeId, startDate: date, startHour: rule.startHour, desiredStartHour: rule.startHour,
+          durationHours: rule.durationHours, durationDays: 1, recurrenceId: rule.id, version: 1, updatedAt: new Date().toISOString() });
+        rule.generatedDates.push(date);
+      }
+    }
+  }
+
+  async repeatAssignment(params: { teamId: string; userId: string; assignmentId: string; frequency: RepeatFrequency; until: string | null }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+    assertEmployeeOwnScope(this.state, params.teamId, params.userId, role, [params.assignmentId]);
+    const source = this.state.assignments.find((item) => item.id === params.assignmentId && item.teamId === params.teamId);
+    if (!source) throw new Error('Nie znaleziono taska.');
+    if (!this.state.employees.some((employee) => employee.id === source.employeeId && employee.teamId === params.teamId && employee.active)) {
+      throw new Error('Nie znaleziono aktywnego pracownika.');
+    }
+    validateRecurrence(source.startDate, source.durationDays, params.until);
+    if (!source.recurrenceId) {
+      const id = randomUUID();
+      this.state.recurrences.push({ id, workspaceId: team.workspaceId, teamId: team.id, taskId: source.taskId,
+        employeeId: source.employeeId, startDate: source.startDate, startHour: source.startHour,
+        durationHours: source.durationHours, frequency: params.frequency, until: params.until, generatedDates: [source.startDate] });
+      source.recurrenceId = id;
+      source.desiredStartHour = source.startHour;
+      source.version += 1;
+      source.updatedAt = new Date().toISOString();
+    }
+    this.materializeRecurrences(params.teamId, source.startDate, shiftIsoDate(source.startDate, 34));
+    return snapshotForTeam(this.state, params.teamId, params.userId);
+  }
+
+  async stopRecurrence(params: { teamId: string; userId: string; assignmentId: string }): Promise<PlannerSnapshot> {
+    const { team, role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
+    assertCanEditTeam(role, team.editMode);
+    assertEmployeeOwnScope(this.state, params.teamId, params.userId, role, [params.assignmentId]);
+    const source = this.state.assignments.find((item) => item.id === params.assignmentId && item.teamId === params.teamId);
+    const rule = this.state.recurrences.find((item) => item.id === source?.recurrenceId && item.teamId === params.teamId);
+    if (!source || !rule) throw new Error('Nie znaleziono cyklu.');
+    assertEmployeeOwnScope(this.state, params.teamId, params.userId, role,
+      this.state.assignments.filter((item) => item.recurrenceId === rule.id).map((item) => item.id), rule.employeeId);
+    rule.until = [rule.until ?? source.startDate, source.startDate].sort()[0];
+    if (rule.until < rule.startDate) rule.until = rule.startDate;
+    this.state.assignments = this.state.assignments.filter((item) => item.recurrenceId !== rule.id || item.startDate <= source.startDate);
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
 
@@ -253,6 +311,7 @@ export class LocalStore implements DataStore {
   }
 
   async createManualTask(params: {
+    kind?: TaskKind;
     teamId: string;
     userId: string;
     title: string;
@@ -281,6 +340,7 @@ export class LocalStore implements DataStore {
     }
 
     this.state.tasks.push({
+      kind: params.kind ?? 'task',
       id: `task-${randomUUID()}`,
       workspaceId: this.state.workspace.id,
       teamId: params.teamId,
@@ -320,6 +380,7 @@ export class LocalStore implements DataStore {
     this.state.tasks = this.state.tasks.filter(
       (task) => !(task.workspaceId === team.workspaceId && (!task.teamId || task.teamId === params.teamId) && removeSet.has(task.id))
     );
+    this.state.recurrences = this.state.recurrences.filter((rule) => !(rule.teamId === params.teamId && removeSet.has(rule.taskId)));
     applyStickyForTeam(this.state, params.teamId, undefined, touchedEmployeeIds);
     return snapshotForTeam(this.state, params.teamId, params.userId);
   }
@@ -415,6 +476,7 @@ export class LocalStore implements DataStore {
       this.state.employees.filter((employee) => employee.teamId === params.teamId).map((employee) => employee.id)
     );
     this.state.assignments = this.state.assignments.filter((assignment) => assignment.teamId !== params.teamId);
+    this.state.recurrences = this.state.recurrences.filter((rule) => rule.teamId !== params.teamId);
     this.state.employees = this.state.employees.filter((employee) => employee.teamId !== params.teamId);
     this.state.teamMembers = this.state.teamMembers.filter((member) => member.teamId !== params.teamId);
     this.state.teams = this.state.teams.filter((item) => item.id !== params.teamId);
@@ -639,6 +701,7 @@ export class LocalStore implements DataStore {
   }
 
   async updateTask(params: {
+    kind?: TaskKind;
     teamId: string;
     userId: string;
     assignmentId: string;
@@ -663,6 +726,7 @@ export class LocalStore implements DataStore {
       task.id === assignment.taskId && task.workspaceId === team.workspaceId
         ? {
             ...task,
+            kind: params.kind ?? task.kind ?? 'task',
             title,
             status: params.description?.trim() || undefined,
             epicId: params.epicId
@@ -741,6 +805,7 @@ export class LocalStore implements DataStore {
       }
       return normalizedAssignment({
         ...original,
+        recurrenceId: undefined,
         id: `asn-${randomUUID()}`,
         taskId,
         employeeId: params.targetEmployeeId,
@@ -1005,6 +1070,7 @@ export class LocalStore implements DataStore {
     const { role } = roleTeamAndMembers(this.state, params.teamId, params.userId);
     assertCanManagePeople(role);
     return {
+      recurrences: clone(this.state.recurrences),
       version: 1,
       exportedAt: new Date().toISOString(),
       workspace: clone(this.state.workspace),
@@ -1032,6 +1098,7 @@ export class LocalStore implements DataStore {
     this.state.epics = clone(params.backup.epics);
     this.state.tasks = clone(params.backup.tasks);
     this.state.assignments = clone(params.backup.assignments);
+    this.state.recurrences = clone(params.backup.recurrences ?? []);
 
     const nextTeamId = this.state.teams[0]?.id;
     if (!nextTeamId) throw new Error('Backup nie zawiera teamu.');

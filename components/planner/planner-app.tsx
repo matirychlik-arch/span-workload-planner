@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { TaskKind, RepeatFrequency } from '@/lib/domain/types';
 import { useRouter } from 'next/navigation';
 import type { CSSProperties, ChangeEvent, FormEvent } from 'react';
 import type { Assignment, Epic, ExcelImportResult, PlannerSnapshot, Task, TeamEditMode, UserRole } from '@/lib/domain/types';
@@ -84,6 +85,7 @@ type SelectionMenuPosition = {
 } | null;
 
 type TaskEditDraft = {
+  kind: TaskKind;
   assignmentId: string;
   title: string;
   description: string;
@@ -242,6 +244,9 @@ export function PlannerApp() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuPosition>(null);
   const [taskEditDraft, setTaskEditDraft] = useState<TaskEditDraft | null>(null);
+  const [repeatDraft, setRepeatDraft] = useState<{ assignmentId: string; frequency: RepeatFrequency; endMode: 'never' | 'date'; until: string } | null>(null);
+  const [repeatSaving, setRepeatSaving] = useState(false);
+  const [repeatError, setRepeatError] = useState('');
   const [dropPreview, setDropPreview] = useState<DropPreview[]>([]);
   const [dropCellKey, setDropCellKey] = useState<string | null>(null);
   const [resizing, setResizing] = useState<ResizeContext | null>(null);
@@ -251,6 +256,7 @@ export function PlannerApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskComposerOpen, setTaskComposerOpen] = useState(false);
   const [manualTaskTitle, setManualTaskTitle] = useState('');
+  const [manualTaskKind, setManualTaskKind] = useState<TaskKind>('task');
   const [manualTaskDescription, setManualTaskDescription] = useState('');
   const [manualEpicId, setManualEpicId] = useState('');
   const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
@@ -440,6 +446,7 @@ export function PlannerApp() {
       if (current?.assignmentId === assignment.id) return current;
       return {
         assignmentId: assignment.id,
+        kind: task.kind ?? 'task',
         title: task.title,
         description: task.status === 'todo' ? '' : task.status ?? '',
         epicId: task.epicId
@@ -1050,6 +1057,7 @@ export function PlannerApp() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (repeatDraft) return;
       if (isTextInputTarget(event.target)) return;
       const key = event.key.toLowerCase();
       const modifier = event.metaKey || event.ctrlKey;
@@ -1073,7 +1081,29 @@ export function PlannerApp() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [canEdit, handleCopySelection, handleDelete, handlePasteAssignments, selectedIds.size]);
+  }, [canEdit, handleCopySelection, handleDelete, handlePasteAssignments, selectedIds.size, repeatDraft]);
+
+  useEffect(() => {
+    if (!repeatDraft) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const dialog = document.querySelector<HTMLElement>('.repeat-modal');
+    dialog?.focus();
+    const handleModalKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !repeatSaving) setRepeatDraft(null);
+      if (event.key !== 'Tab' || !dialog) return;
+      const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled)'));
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog)) {
+        event.preventDefault(); first.focus();
+      }
+    };
+    window.addEventListener('keydown', handleModalKey);
+    return () => { window.removeEventListener('keydown', handleModalKey); previousFocus?.focus(); };
+  }, [Boolean(repeatDraft), repeatSaving]);
 
   const handleDeleteTasks = useCallback(
     (taskIds: string[]) => {
@@ -1169,6 +1199,7 @@ export function PlannerApp() {
               ? {
                   ...task,
                   title,
+                  kind: taskEditDraft.kind,
                   status: taskEditDraft.description.trim() || undefined,
                   epicId: taskEditDraft.epicId
                 }
@@ -1182,6 +1213,7 @@ export function PlannerApp() {
           body: JSON.stringify({
             teamId,
             assignmentId: taskEditDraft.assignmentId,
+            kind: taskEditDraft.kind,
             title,
             description: taskEditDraft.description.trim() || undefined,
             epicId: taskEditDraft.epicId
@@ -1331,6 +1363,7 @@ export function PlannerApp() {
                   workspaceId: snapshot.workspace.id,
                   source: 'manual',
                   title,
+                  kind: manualTaskKind,
                   epicId: fallbackEpicId,
                   status: description || 'todo'
                 }
@@ -1343,12 +1376,14 @@ export function PlannerApp() {
           body: JSON.stringify({
             teamId,
             title,
+            kind: manualTaskKind,
             epicId: manualEpicId || undefined,
             description: description || undefined
           })
         });
         updateSnapshot(next);
         setManualTaskTitle('');
+        setManualTaskKind('task');
         setManualTaskDescription('');
         setManualEpicId('');
         setTaskComposerOpen(false);
@@ -1359,8 +1394,31 @@ export function PlannerApp() {
         setError(message);
       }
     },
-    [canEdit, colorPaletteEpics, manualEpicId, manualTaskDescription, manualTaskTitle, snapshot, teamId, updateSnapshot]
+    [canEdit, colorPaletteEpics, manualEpicId, manualTaskDescription, manualTaskTitle, manualTaskKind, snapshot, teamId, updateSnapshot]
   );
+
+  const repeatAssignment = repeatDraft ? assignmentById.get(repeatDraft.assignmentId) : undefined;
+  const repeatRule = snapshot?.recurrences?.find((rule) => rule.id === repeatAssignment?.recurrenceId);
+  const saveRecurrence = async (stop = false) => {
+    if (!repeatDraft || repeatSaving) return;
+    setRepeatSaving(true);
+    setRepeatError('');
+    try {
+      await plannerMutationQueueRef.current;
+      const next = await api<PlannerSnapshot>('/api/assignments/repeat', {
+        method: stop ? 'DELETE' : 'POST',
+        body: JSON.stringify({ teamId, assignmentId: repeatDraft.assignmentId, frequency: repeatDraft.frequency,
+          until: repeatDraft.endMode === 'date' ? repeatDraft.until : null })
+      });
+      updateSnapshot(next);
+      await loadPlanner(teamId, timelineStartIso);
+      setRepeatDraft(null);
+    } catch (error) {
+      setRepeatError(error instanceof Error ? error.message : 'Nie udało się zapisać cyklu.');
+    } finally {
+      setRepeatSaving(false);
+    }
+  };
 
   const handleImportJira = useCallback(async () => {
     if (!teamId || !canImportExternal) return;
@@ -1999,7 +2057,7 @@ export function PlannerApp() {
       {selectionMenu && snapshot && canEdit && selectedAssignments.length > 0 && (
         <div
           className="selection-menu at-pointer"
-          style={{ left: selectionMenu.x, top: selectionMenu.y } as CSSProperties}
+          style={{ left: selectionMenu.x, top: selectionMenu.y, maxHeight: `calc(100dvh - ${selectionMenu.y + 12}px)`, overflowY: 'auto' } as CSSProperties}
           onClick={(event) => event.stopPropagation()}
         >
           {taskEditDraft && selectedAssignments.length === 1 ? (
@@ -2019,6 +2077,11 @@ export function PlannerApp() {
                 </button>
               </div>
               <div className="task-edit-fields">
+                <label>Typ
+                  <select aria-label="Typ taska" value={taskEditDraft.kind} onChange={(event) => setTaskEditDraft((current) => current ? { ...current, kind: event.target.value as TaskKind } : current)}>
+                    <option value="task">Task</option><option value="meeting">Spotkanie</option>
+                  </select>
+                </label>
                 <input
                   value={taskEditDraft.title}
                   onChange={(event) => setTaskEditDraft((current) => (current ? { ...current, title: event.target.value } : current))}
@@ -2053,6 +2116,15 @@ export function PlannerApp() {
                 })}
               </div>
               <div className="task-edit-actions">
+                <button type="button" className="secondary" disabled={selectedAssignments[0].durationDays !== 1 && !selectedAssignments[0].recurrenceId}
+                  onClick={() => {
+                    const assignment = selectedAssignments[0];
+                    const rule = snapshot.recurrences?.find((item) => item.id === assignment.recurrenceId);
+                    setRepeatDraft({ assignmentId: assignment.id, frequency: rule?.frequency ?? 'weekdays',
+                      endMode: rule?.until ? 'date' : 'never', until: rule?.until ?? shiftIsoDate(assignment.startDate, 90) });
+                    setRepeatError('');
+                    setSelectionMenu(null);
+                  }}>Powtarzanie</button>
                 <button type="submit" disabled={!taskEditDraft.title.trim() || !taskEditDraft.epicId}>
                   Zapisz
                 </button>
@@ -2168,6 +2240,11 @@ export function PlannerApp() {
               </div>
               {taskComposerOpen && (
                 <form className="task-composer" onSubmit={handleCreateTask}>
+                  <label>Typ
+                    <select aria-label="Typ nowego taska" value={manualTaskKind} onChange={(event) => setManualTaskKind(event.target.value as TaskKind)}>
+                      <option value="task">Task</option><option value="meeting">Spotkanie</option>
+                    </select>
+                  </label>
                   <input
                     autoFocus
                     value={manualTaskTitle}
@@ -2209,7 +2286,8 @@ export function PlannerApp() {
                   return (
                     <div
                       key={task.id}
-                      className={`task ${taskReady ? '' : 'pending'}`}
+                      className={`task ${task.kind === 'meeting' ? 'meeting' : ''} ${taskReady ? '' : 'pending'}`}
+                      title={task.kind === 'meeting' ? 'Spotkanie' : undefined}
                       draggable={canEdit && taskReady}
                       onDragStart={(event) => {
                         if (!canEdit || !taskReady) {
@@ -2298,6 +2376,15 @@ export function PlannerApp() {
                   {visibleDays.map((date) => {
                     const items = getDayItems(employee.id, date);
                     const total = items.reduce((sum, assignment) => sum + assignment.durationHours, 0);
+                    const occupiedHours = new Set<number>();
+                    const hasConflict = items.some((item) => {
+                      let overlap = false;
+                      for (let hour = item.startHour; hour < item.startHour + item.durationHours; hour++) {
+                        if (occupiedHours.has(hour)) overlap = true;
+                        occupiedHours.add(hour);
+                      }
+                      return overlap;
+                    });
                     const cellKey = `${employee.id}|${date}`;
                     const isDropCell = dropCellKey === cellKey;
                     const weekend = isWeekend(parseIsoDate(date));
@@ -2379,7 +2466,8 @@ export function PlannerApp() {
                             <div
                               key={assignment.id}
                               data-onboarding="multiselect"
-                              className={`task planned ${days > 1 ? 'multi' : ''} ${isSelected ? 'selected' : ''} ${assignmentReady ? '' : 'pending'}`}
+                              className={`task planned ${assignment.durationHours === 1 ? 'compact' : ''} ${task.kind === 'meeting' ? 'meeting' : ''} ${days > 1 ? 'multi' : ''} ${isSelected ? 'selected' : ''} ${assignmentReady ? '' : 'pending'}`}
+                              title={`${task.title} · ${task.kind === 'meeting' ? 'Spotkanie' : 'Task'}${assignment.recurrenceId ? ' · Cykliczny' : ''}${description ? ` · ${description}` : ''}`}
                               draggable={canEdit && assignmentReady}
                               onContextMenu={(event) => {
                                 if (!canEdit) return;
@@ -2449,7 +2537,7 @@ export function PlannerApp() {
                                   ×
                                 </button>
                               )}
-                              <div className="task-title">{title}</div>
+                              <div className="task-title">{assignment.recurrenceId && <span className="recurrence-mark" aria-label="Cykliczny">↻ </span>}{title}</div>
                               <div className="task-meta">{description || meta}</div>
                               {canEdit && assignmentReady && (
                                 <>
@@ -2488,7 +2576,8 @@ export function PlannerApp() {
                           );
                         })}
 
-                        <div className={`sum ${total > DAY_END_HOUR - DAY_START_HOUR ? 'over' : total === DAY_END_HOUR - DAY_START_HOUR ? 'ok' : ''}`}>
+                        <div className={`sum ${hasConflict || total > DAY_END_HOUR - DAY_START_HOUR ? 'over' : total === DAY_END_HOUR - DAY_START_HOUR ? 'ok' : ''}`}>
+                          {hasConflict && <span title="Zadania nakładają się godzinami">Konflikt</span>}
                           <span>SUMA</span>
                           <span>{total}h</span>
                         </div>
@@ -2501,6 +2590,40 @@ export function PlannerApp() {
           </div>
         </section>
       </main>
+      )}
+
+      {repeatDraft && repeatAssignment && (
+        <div className="modal-backdrop repeat-backdrop" onMouseDown={() => { if (!repeatSaving) setRepeatDraft(null); }}>
+          <section className="repeat-modal" role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="repeat-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="selection-menu-head"><h2 id="repeat-title">Powtarzanie</h2>
+              <button className="selection-clear" aria-label="Zamknij powtarzanie" disabled={repeatSaving} onClick={() => setRepeatDraft(null)}>×</button></div>
+            <strong>{taskById.get(repeatAssignment.taskId)?.title}</strong>
+            <form onSubmit={(event) => { event.preventDefault(); if (!repeatRule) void saveRecurrence(); }}>
+              <label>Powtarzaj
+                <select aria-label="Częstotliwość" disabled={repeatSaving || Boolean(repeatRule)} value={repeatDraft.frequency}
+                  onChange={(event) => setRepeatDraft({ ...repeatDraft, frequency: event.target.value as RepeatFrequency })}>
+                  <option value="daily">Codziennie</option><option value="weekdays">W dni robocze (pon.–pt.)</option>
+                </select>
+              </label>
+              <label>Koniec
+                <select aria-label="Koniec powtarzania" disabled={repeatSaving || Boolean(repeatRule)} value={repeatDraft.endMode}
+                  onChange={(event) => setRepeatDraft({ ...repeatDraft, endMode: event.target.value as 'never' | 'date' })}>
+                  <option value="never">Bez końca</option><option value="date">W wybranym dniu</option>
+                </select>
+              </label>
+              {repeatDraft.endMode === 'date' && <label>Ostatni dzień
+                <input aria-label="Ostatni dzień powtarzania" type="date" required min={repeatRule?.startDate ?? repeatAssignment.startDate}
+                  disabled={repeatSaving || Boolean(repeatRule)} value={repeatDraft.until} onChange={(event) => setRepeatDraft({ ...repeatDraft, until: event.target.value })} />
+              </label>}
+              {repeatError && <p role="alert" className="repeat-error">{repeatError}</p>}
+              <div className="task-edit-actions">
+                {repeatRule
+                  ? <button type="button" disabled={repeatSaving} onClick={() => void saveRecurrence(true)}>{repeatSaving ? 'Zapisywanie…' : 'Zakończ po tym wystąpieniu'}</button>
+                  : <button type="submit" disabled={repeatSaving}>{repeatSaving ? 'Zapisywanie…' : 'Utwórz cykl'}</button>}
+              </div>
+            </form>
+          </section>
+        </div>
       )}
 
       {settingsOpen && (

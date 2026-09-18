@@ -1,6 +1,22 @@
 export type UserRole = 'admin' | 'pm' | 'employee';
 export type TeamEditMode = 'collaborative' | 'pm_only';
 export type TaskSource = 'jira' | 'manual';
+export type TaskKind = 'task' | 'meeting';
+export type RepeatFrequency = 'daily' | 'weekdays';
+
+export interface RecurrenceRule {
+  id: string;
+  workspaceId: string;
+  teamId: string;
+  taskId: string;
+  employeeId: string;
+  startDate: string;
+  startHour: number;
+  durationHours: number;
+  frequency: RepeatFrequency;
+  until: string | null;
+  generatedDates: string[];
+}
 
 export interface Workspace {
   id: string;
@@ -64,6 +80,7 @@ export interface Epic {
 }
 
 export interface Task {
+  kind?: TaskKind;
   id: string;
   workspaceId: string;
   teamId?: string;
@@ -78,6 +95,7 @@ export interface Task {
 }
 
 export interface Assignment {
+  recurrenceId?: string;
   id: string;
   workspaceId: string;
   teamId: string;
@@ -99,6 +117,7 @@ export interface PlannerWindow {
 }
 
 export interface PlannerSnapshot {
+  recurrences?: RecurrenceRule[];
   workspace: Workspace;
   team: Team;
   members: TeamMember[];
@@ -113,6 +132,8 @@ export interface PlannerSnapshot {
 }
 
 export interface DataStore {
+  repeatAssignment(params: { teamId: string; userId: string; assignmentId: string; frequency: RepeatFrequency; until: string | null }): Promise<PlannerSnapshot>;
+  stopRecurrence(params: { teamId: string; userId: string; assignmentId: string }): Promise<PlannerSnapshot>;
   listTeamsForUser(userId: string): Promise<Array<Team & { role: UserRole }>>;
   getPlannerSnapshot(params: {
     teamId: string;
@@ -140,6 +161,7 @@ export interface DataStore {
     durationDays?: number;
   }): Promise<PlannerSnapshot>;
   createManualTask(params: {
+    kind?: TaskKind;
     teamId: string;
     userId: string;
     title: string;
@@ -223,6 +245,7 @@ export interface DataStore {
     epicId: string;
   }): Promise<PlannerSnapshot>;
   updateTask(params: {
+    kind?: TaskKind;
     teamId: string;
     userId: string;
     assignmentId: string;
@@ -280,6 +303,7 @@ export interface ExcelImportResult {
 }
 
 export interface PlannerBackup {
+  recurrences?: RecurrenceRule[];
   version: 1;
   exportedAt: string;
   workspace: Workspace;

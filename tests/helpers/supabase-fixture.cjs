@@ -3,7 +3,7 @@ const path = require('node:path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '../..');
-function loadStore(storeSource) {
+function loadModule(entry, storeSource) {
   const cache = new Map();
   function load(file) {
     if (cache.has(file)) return cache.get(file);
@@ -25,12 +25,14 @@ function loadStore(storeSource) {
     cache.set(file, module.exports);
     return module.exports;
   }
-  return load('lib/data/supabase-store.ts').SupabaseStore;
+  return load(entry);
 }
+function loadStore(storeSource) { return loadModule('lib/data/supabase-store.ts', storeSource).SupabaseStore; }
 
 function fixture({ role = 'employee', mode = 'collaborative', delayMs = 0 } = {}) {
   const calls = [];
   const db = {
+    assignment_recurrences: [],
     workspaces: [{ id: 'w', name: 'Test', google_auth_enabled: true, jira_connected: false, slack_connected: false }],
     app_users: [{ id: 'user-1', workspace_id: 'w', email: 'test@example.test', name: 'Test' }],
     teams: [{ id: 't', workspace_id: 'w', name: 'Test', pm_user_id: 'pm', edit_mode: mode }],
@@ -57,7 +59,7 @@ function fixture({ role = 'employee', mode = 'collaborative', delayMs = 0 } = {}
     } } },
     from(table) {
       if (!db[table]) throw new Error(`Unexpected table: ${table}`);
-      let action = 'select', payload, keys = ['id'], single = false, max = Infinity;
+      let action = 'select', payload, keys = ['id'], single = false, max = Infinity, offset = 0;
       const filters = [];
       const query = {
         select() { return query; },
@@ -67,6 +69,7 @@ function fixture({ role = 'employee', mode = 'collaborative', delayMs = 0 } = {}
         ilike(key, value) { filters.push((row) => String(row[key]).toLowerCase() === value.toLowerCase()); return query; },
         order() { return query; },
         limit(value) { max = value; return query; },
+        range(from, to) { offset = from; max = to + 1; return query; },
         maybeSingle() { single = true; return query; },
         single() { single = true; return query; },
         insert(value) { action = 'insert'; payload = value; return query; },
@@ -87,7 +90,7 @@ function fixture({ role = 'employee', mode = 'collaborative', delayMs = 0 } = {}
             } else if (action === 'update') {
               db[table].forEach((row) => { if (matches(row)) Object.assign(row, structuredClone(payload)); });
             } else if (action === 'delete') db[table] = db[table].filter((row) => !matches(row));
-            const rows = db[table].filter(matches).slice(0, max);
+            const rows = db[table].filter(matches).slice(offset, max);
             return { data: structuredClone(single ? rows[0] ?? null : rows), error: null };
           })().then(resolve, reject);
         }
@@ -98,4 +101,4 @@ function fixture({ role = 'employee', mode = 'collaborative', delayMs = 0 } = {}
   return { client, calls, db, faults };
 }
 
-module.exports = { loadStore, fixture };
+module.exports = { loadStore, loadModule, fixture };

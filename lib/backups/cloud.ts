@@ -1,5 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { readAllRows } from '@/lib/data/read-all-rows';
 import type { PlannerBackup } from '@/lib/domain/types';
+import { recurrenceColumns, recurrenceFromRow, type RecurrenceRow } from '@/lib/domain/recurrence';
 
 export const BACKUP_BUCKET = process.env.SUPABASE_BACKUP_BUCKET || 'planner-backups';
 
@@ -74,6 +76,7 @@ type EpicRow = {
 };
 
 type TaskRow = {
+  kind?: 'task' | 'meeting';
   id: string;
   workspace_id: string;
   team_id?: string | null;
@@ -88,6 +91,7 @@ type TaskRow = {
 };
 
 type AssignmentRow = {
+  recurrence_id?: string | null;
   id: string;
   workspace_id: string;
   team_id: string;
@@ -202,15 +206,16 @@ export async function downloadPlannerBackup(client: SupabaseClient, path: string
 }
 
 export async function exportWorkspaceBackup(client: SupabaseClient, workspaceId: string): Promise<PlannerBackup | null> {
-  const [workspaceResult, teamsResult, usersResult, invitesResult, employeesResult, epicsResult, tasksResult, assignmentsResult] = await Promise.all([
+  const [workspaceResult, teamsResult, usersResult, invitesResult, employeesResult, epicsResult, tasksResult, assignmentsResult, recurrenceResult] = await Promise.all([
     client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', workspaceId).single(),
     client.from('teams').select('id, workspace_id, name, pm_user_id, edit_mode').eq('workspace_id', workspaceId),
     client.from('app_users').select('id, workspace_id, email, name, google_sub, slack_user_id').eq('workspace_id', workspaceId),
     client.from('workspace_invites').select('id, workspace_id, team_id, email, name, role, employee_name, tint_color, active').eq('workspace_id', workspaceId),
     client.from('employees').select('id, workspace_id, team_id, user_id, name, active, tint_color').eq('workspace_id', workspaceId),
     client.from('epics').select('id, workspace_id, team_id, jira_key, name, color').eq('workspace_id', workspaceId),
-    client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id').eq('workspace_id', workspaceId),
-    client.from('assignments').select('id, workspace_id, team_id, task_id, employee_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at').eq('workspace_id', workspaceId)
+    readAllRows((from, to) => client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id, kind').eq('workspace_id', workspaceId).order('id').range(from, to)),
+    readAllRows((from, to) => client.from('assignments').select('id, workspace_id, team_id, task_id, employee_id, recurrence_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at').eq('workspace_id', workspaceId).order('id').range(from, to)),
+    readAllRows((from, to) => client.from('assignment_recurrences').select(recurrenceColumns).eq('workspace_id', workspaceId).order('id').range(from, to))
   ]);
 
   if (workspaceResult.error) throw new Error(workspaceResult.error.message);
@@ -221,6 +226,7 @@ export async function exportWorkspaceBackup(client: SupabaseClient, workspaceId:
   if (epicsResult.error) throw new Error(epicsResult.error.message);
   if (tasksResult.error) throw new Error(tasksResult.error.message);
   if (assignmentsResult.error) throw new Error(assignmentsResult.error.message);
+  if (recurrenceResult.error) throw new Error(recurrenceResult.error.message);
 
   const teams = (teamsResult.data as TeamRow[]) ?? [];
   if (!teams.length) return null;
@@ -234,6 +240,7 @@ export async function exportWorkspaceBackup(client: SupabaseClient, workspaceId:
 
   const workspace = workspaceResult.data as WorkspaceRow;
   return {
+    recurrences: (recurrenceResult.data as RecurrenceRow[]).map(recurrenceFromRow),
     version: 1,
     exportedAt: new Date().toISOString(),
     workspace: {
@@ -293,6 +300,7 @@ export async function exportWorkspaceBackup(client: SupabaseClient, workspaceId:
       color: epic.color
     })),
     tasks: ((tasksResult.data as TaskRow[]) ?? []).map((task) => ({
+      kind: task.kind ?? 'task',
       id: task.id,
       workspaceId: task.workspace_id,
       teamId: task.team_id ?? undefined,
@@ -306,6 +314,7 @@ export async function exportWorkspaceBackup(client: SupabaseClient, workspaceId:
       assigneeId: task.assignee_id ?? undefined
     })),
     assignments: ((assignmentsResult.data as AssignmentRow[]) ?? []).map((assignment) => ({
+      recurrenceId: assignment.recurrence_id ?? undefined,
       id: assignment.id,
       workspaceId: assignment.workspace_id,
       teamId: assignment.team_id,

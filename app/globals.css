@@ -487,6 +487,7 @@ button.secondary {
 }
 
 .task-edit-fields input,
+.task-edit-fields select,
 .task-edit-fields textarea {
   width: 100%;
   border: 0.5px solid var(--line2);
@@ -501,6 +502,8 @@ button.secondary {
 
 .task-edit-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
   margin-top: 10px;
 }
@@ -687,6 +690,52 @@ h2 {
   opacity: 0.62;
   filter: saturate(0.75);
 }
+
+.task.meeting::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border: 1px dashed currentColor;
+  border-radius: 10px;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.recurrence-mark { display: inline-block; margin-right: 5px; }
+.task.planned.compact { padding: 4px 10px 10px; }
+.task.planned.compact .task-title {
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task.planned.compact .task-meta {
+  margin-top: 1px;
+  font-size: 10px;
+  line-height: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modal-backdrop.repeat-backdrop { place-items: center; }
+.repeat-modal {
+  width: min(420px, 100%);
+  max-height: calc(100dvh - 36px);
+  overflow: auto;
+  padding: 20px;
+  background: var(--panel);
+  border: 0.5px solid var(--line2);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(26, 25, 22, 0.16);
+  overflow-wrap: anywhere;
+}
+.repeat-modal form { display: grid; gap: 16px; margin-top: 20px; }
+.repeat-modal label, .task-edit-fields label { display: grid; gap: 6px; }
+.repeat-modal input, .repeat-modal select { width: 100%; min-width: 0; }
+.repeat-modal .task-edit-actions button { white-space: normal; }
+.repeat-error { color: var(--coral); margin: 0; }
 
 .task-title {
   font-weight: 500;

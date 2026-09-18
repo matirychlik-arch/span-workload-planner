@@ -44,9 +44,10 @@ function sortAssignments(a: Assignment, b: Assignment): number {
 export function resolveStickyForEmployee(assignments: Assignment[], pinnedAssignmentId?: string): Assignment[] {
   const normalized = assignments.map(normalizeAssignment);
   const pinned = pinnedAssignmentId ? normalized.find((item) => item.id === pinnedAssignmentId) : undefined;
-  const ordered = pinned
+  const priorityOrdered = pinned
     ? [pinned, ...normalized.filter((item) => item.id !== pinned.id).sort(sortAssignments)]
     : [...normalized].sort(sortAssignments);
+  const ordered = [...priorityOrdered.filter((item) => item.recurrenceId), ...priorityOrdered.filter((item) => !item.recurrenceId)];
 
   const placed: Assignment[] = [];
   // Each occupied hour stores the latest blocker end. Checking a block now
@@ -74,7 +75,7 @@ export function resolveStickyForEmployee(assignments: Assignment[], pinnedAssign
     };
     candidate.durationHours = Math.max(1, Math.min(candidate.durationHours, DAY_END_HOUR - candidate.startHour));
 
-    while (true) {
+    while (!candidate.recurrenceId) {
       let blockerEnd = 0;
       for (const hours of days) {
         for (let hour = candidate.startHour; hour < assignmentEndHour(candidate); hour += 1) {

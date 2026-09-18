@@ -4,6 +4,7 @@ import { fail, ok, parseBody } from '@/lib/api/http';
 import { resolveCurrentUserId } from '@/lib/auth/session';
 
 const bodySchema = z.object({
+  kind: z.enum(['task', 'meeting']).optional(),
   teamId: z.string().min(1),
   title: z.string().trim().min(1).max(160),
   description: z.string().trim().max(240).optional(),

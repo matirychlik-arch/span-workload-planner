@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { readAllRows } from '@/lib/data/read-all-rows';
+import type { TaskKind, RepeatFrequency } from '@/lib/domain/types';
+import { recurrenceColumns, recurrenceFromRow, recurrenceToRow, validateRecurrence, type RecurrenceRow } from '@/lib/domain/recurrence';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { fetchJiraIssues } from '@/lib/integrations/jira';
 import { resolveSticky, resolveStickyForEmployees } from '@/lib/domain/sticky';
@@ -79,6 +82,7 @@ type EpicRow = {
 };
 
 type TaskRow = {
+  kind?: TaskKind;
   id: string;
   workspace_id: string;
   team_id?: string | null;
@@ -95,6 +99,7 @@ type TaskRow = {
 const EXCEL_IMPORT_START_HOUR = 8;
 
 type AssignmentRow = {
+  recurrence_id?: string | null;
   id: string;
   workspace_id: string;
   team_id: string;
@@ -173,6 +178,7 @@ function toEpic(row: EpicRow): Epic {
 
 function toTask(row: TaskRow): Task {
   return {
+    kind: row.kind ?? 'task',
     id: row.id,
     workspaceId: row.workspace_id,
     teamId: row.team_id ?? undefined,
@@ -189,6 +195,7 @@ function toTask(row: TaskRow): Task {
 
 function toAssignment(row: AssignmentRow): Assignment {
   return {
+    recurrenceId: row.recurrence_id ?? undefined,
     id: row.id,
     workspaceId: row.workspace_id,
     teamId: row.team_id,
@@ -207,6 +214,7 @@ function toAssignment(row: AssignmentRow): Assignment {
 
 function toAssignmentRow(assignment: Assignment): AssignmentRow {
   return {
+    recurrence_id: assignment.recurrenceId ?? null,
     id: assignment.id,
     workspace_id: assignment.workspaceId,
     team_id: assignment.teamId,
@@ -713,10 +721,10 @@ export class SupabaseStore implements DataStore {
   }
 
   private async loadAssignmentsForTeam(teamId: string): Promise<Assignment[]> {
-    const { data, error } = await this.client
+    const { data, error } = await readAllRows((from, to) => this.client
       .from('assignments')
-      .select('id, workspace_id, team_id, task_id, employee_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at')
-      .eq('team_id', teamId);
+      .select('id, workspace_id, team_id, task_id, employee_id, recurrence_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at')
+      .eq('team_id', teamId).order('id').range(from, to));
     if (error) throw new Error(error.message);
     return (data as AssignmentRow[]).map(toAssignment).map(normalizeAssignment);
   }
@@ -742,15 +750,16 @@ export class SupabaseStore implements DataStore {
     const memberUserIds = members.map((member) => member.userId);
     if (!mutationContext) await this.ensureDefaultEpic(team.workspaceId, team.id);
 
-    const [workspaceResult, usersResult, employeesResult, epicsResult, tasksResult, assignmentsResult] = await Promise.all([
+    const [workspaceResult, usersResult, employeesResult, epicsResult, tasksResult, assignmentsResult, recurrenceResult] = await Promise.all([
       this.client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', team.workspaceId).single(),
       memberUserIds.length
         ? this.client.from('app_users').select('id, workspace_id, email, name').eq('workspace_id', team.workspaceId).in('id', memberUserIds)
         : this.client.from('app_users').select('id, workspace_id, email, name').eq('workspace_id', team.workspaceId).limit(0),
       this.client.from('employees').select('id, workspace_id, team_id, user_id, name, active, tint_color').eq('team_id', team.id).eq('active', true),
       this.client.from('epics').select('id, workspace_id, team_id, jira_key, name, color').eq('workspace_id', team.workspaceId).eq('team_id', team.id),
-      this.client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id').eq('workspace_id', team.workspaceId).eq('team_id', team.id),
-      this.client.from('assignments').select('id, workspace_id, team_id, task_id, employee_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at').eq('team_id', team.id)
+      readAllRows((from, to) => this.client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id, kind').eq('workspace_id', team.workspaceId).eq('team_id', team.id).order('id').range(from, to)),
+      readAllRows((from, to) => this.client.from('assignments').select('id, workspace_id, team_id, task_id, employee_id, recurrence_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at').eq('team_id', team.id).order('id').range(from, to)),
+      readAllRows((from, to) => this.client.from('assignment_recurrences').select(recurrenceColumns).eq('team_id', team.id).order('id').range(from, to))
     ]);
 
     if (workspaceResult.error) throw new Error(workspaceResult.error.message);
@@ -759,6 +768,7 @@ export class SupabaseStore implements DataStore {
     if (epicsResult.error) throw new Error(epicsResult.error.message);
     if (tasksResult.error) throw new Error(tasksResult.error.message);
     if (assignmentsResult.error) throw new Error(assignmentsResult.error.message);
+    if (recurrenceResult.error) throw new Error(recurrenceResult.error.message);
 
     const workspace = toWorkspace(workspaceResult.data as WorkspaceRow);
     const users = (usersResult.data as AppUserRow[]).map(toUser);
@@ -776,6 +786,7 @@ export class SupabaseStore implements DataStore {
       tasks,
       epics,
       assignments,
+      recurrences: (recurrenceResult.data as RecurrenceRow[]).map(recurrenceFromRow),
       currentUserId: userId,
       currentRole: role,
       canEdit
@@ -809,7 +820,36 @@ export class SupabaseStore implements DataStore {
 
   async getPlannerSnapshot(params: { teamId: string; userId: string; from: string; to: string }): Promise<PlannerSnapshot> {
     await this.ensureUserWorkspaceAndSeed(params.userId);
+    await this.teamContext(params.teamId, params.userId);
+    const { error } = await this.client.rpc('span_materialize_recurrences', { p_team: params.teamId, p_from: params.from, p_to: params.to });
+    if (error) throw new Error(error.message);
     return this.snapshot(params.teamId, params.userId);
+  }
+
+  async repeatAssignment(params: { teamId: string; userId: string; assignmentId: string; frequency: RepeatFrequency; until: string | null }): Promise<PlannerSnapshot> {
+    const context = await this.teamContext(params.teamId, params.userId);
+    assertCanEditTeam(context.role, context.team.editMode);
+    await this.assertEmployeeOwnScope(params.teamId, params.userId, context.role, [params.assignmentId]);
+    const assignments = await this.loadAssignmentsForTeam(params.teamId);
+    const source = assignments.find((item) => item.id === params.assignmentId);
+    if (!source) throw new Error('Nie znaleziono taska.');
+    validateRecurrence(source.startDate, source.durationDays, params.until);
+    const { error } = await this.client.rpc('span_create_recurrence', { p_team: params.teamId, p_user: params.userId,
+      p_assignment: params.assignmentId, p_frequency: params.frequency, p_until: params.until });
+    if (error) throw new Error(error.message);
+    const { error: generateError } = await this.client.rpc('span_materialize_recurrences', {
+      p_team: params.teamId, p_from: source.startDate, p_to: shiftIsoDate(source.startDate, 34) });
+    if (generateError) throw new Error(generateError.message);
+    return this.snapshot(params.teamId, params.userId, context);
+  }
+
+  async stopRecurrence(params: { teamId: string; userId: string; assignmentId: string }): Promise<PlannerSnapshot> {
+    const context = await this.teamContext(params.teamId, params.userId);
+    assertCanEditTeam(context.role, context.team.editMode);
+    await this.assertEmployeeOwnScope(params.teamId, params.userId, context.role, [params.assignmentId]);
+    const { error } = await this.client.rpc('span_stop_recurrence', { p_team: params.teamId, p_user: params.userId, p_assignment: params.assignmentId });
+    if (error) throw new Error(error.message);
+    return this.snapshot(params.teamId, params.userId, context);
   }
 
   async moveAssignments(params: {
@@ -901,6 +941,7 @@ export class SupabaseStore implements DataStore {
   }
 
   async createManualTask(params: {
+    kind?: TaskKind;
     teamId: string;
     userId: string;
     title: string;
@@ -954,6 +995,7 @@ export class SupabaseStore implements DataStore {
     }
 
     const newTask: TaskRow = {
+      kind: params.kind ?? 'task',
       id: randomUUID(),
       workspace_id: team.workspaceId,
       team_id: params.teamId,
@@ -1480,6 +1522,7 @@ export class SupabaseStore implements DataStore {
   }
 
   async updateTask(params: {
+    kind?: TaskKind;
     teamId: string;
     userId: string;
     assignmentId: string;
@@ -1519,7 +1562,8 @@ export class SupabaseStore implements DataStore {
       .update({
         title,
         status: params.description?.trim() || null,
-        epic_id: params.epicId
+        epic_id: params.epicId,
+        ...(params.kind ? { kind: params.kind } : {})
       })
       .eq('workspace_id', team.workspaceId)
       .eq('team_id', params.teamId)
@@ -1587,7 +1631,7 @@ export class SupabaseStore implements DataStore {
       const sourceTaskIds = Array.from(new Set(selected.map((assignment) => assignment.taskId)));
       const { data: sourceTasks, error: sourceTasksError } = await this.client
         .from('tasks')
-        .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
+        .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id, kind')
         .eq('workspace_id', team.workspaceId)
         .eq('team_id', params.teamId)
         .in('id', sourceTaskIds);
@@ -1619,6 +1663,7 @@ export class SupabaseStore implements DataStore {
     const copies = selected.map((assignment) =>
       normalizeAssignment({
         ...assignment,
+        recurrenceId: undefined,
         id: randomUUID(),
         taskId: taskIdByOriginalAssignment.get(assignment.id) ?? assignment.taskId,
         employeeId: params.targetEmployeeId,
@@ -1697,7 +1742,7 @@ export class SupabaseStore implements DataStore {
 
     const { data: existingTasksData, error: tasksError } = await this.client
       .from('tasks')
-      .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
+      .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id, kind')
       .eq('workspace_id', team.workspaceId)
       .eq('team_id', params.teamId);
     if (tasksError) throw new Error(tasksError.message);
@@ -1786,7 +1831,7 @@ export class SupabaseStore implements DataStore {
         .eq('team_id', params.teamId),
       this.client
         .from('tasks')
-        .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id')
+        .select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id, kind')
         .eq('workspace_id', team.workspaceId)
         .eq('team_id', params.teamId)
     ]);
@@ -1929,7 +1974,7 @@ export class SupabaseStore implements DataStore {
     const { team, role } = await this.teamContext(params.teamId, params.userId);
     assertCanManagePeople(role);
 
-    const [workspaceResult, teamsResult, usersResult, membersResult, invitesResult, employeesResult, epicsResult, tasksResult, assignmentsResult] =
+    const [workspaceResult, teamsResult, usersResult, membersResult, invitesResult, employeesResult, epicsResult, tasksResult, assignmentsResult, recurrenceResult] =
       await Promise.all([
         this.client.from('workspaces').select('id, name, google_auth_enabled, jira_connected, slack_connected').eq('id', team.workspaceId).single(),
         this.client.from('teams').select('id, workspace_id, name, pm_user_id, edit_mode').eq('workspace_id', team.workspaceId),
@@ -1938,8 +1983,9 @@ export class SupabaseStore implements DataStore {
         this.client.from('workspace_invites').select('id, workspace_id, team_id, email, name, role, employee_name, tint_color, active').eq('workspace_id', team.workspaceId),
         this.client.from('employees').select('id, workspace_id, team_id, user_id, name, active, tint_color').eq('workspace_id', team.workspaceId),
         this.client.from('epics').select('id, workspace_id, team_id, jira_key, name, color').eq('workspace_id', team.workspaceId),
-        this.client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id').eq('workspace_id', team.workspaceId),
-        this.client.from('assignments').select('id, workspace_id, team_id, task_id, employee_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at').eq('workspace_id', team.workspaceId)
+        readAllRows((from, to) => this.client.from('tasks').select('id, workspace_id, team_id, source, jira_issue_id, jira_key, title, url, epic_id, status, assignee_id, kind').eq('workspace_id', team.workspaceId).order('id').range(from, to)),
+        readAllRows((from, to) => this.client.from('assignments').select('id, workspace_id, team_id, task_id, employee_id, recurrence_id, start_date, start_hour, desired_start_hour, duration_hours, duration_days, completion_ratio, version, updated_at').eq('workspace_id', team.workspaceId).order('id').range(from, to)),
+        readAllRows((from, to) => this.client.from('assignment_recurrences').select(recurrenceColumns).eq('workspace_id', team.workspaceId).order('id').range(from, to))
       ]);
 
     if (workspaceResult.error) throw new Error(workspaceResult.error.message);
@@ -1953,7 +1999,9 @@ export class SupabaseStore implements DataStore {
     if (assignmentsResult.error) throw new Error(assignmentsResult.error.message);
 
     const teamIds = new Set((teamsResult.data as TeamRow[]).map((item) => item.id));
+    if (recurrenceResult.error) throw new Error(recurrenceResult.error.message);
     return {
+      recurrences: (recurrenceResult.data as RecurrenceRow[]).map(recurrenceFromRow),
       version: 1,
       exportedAt: new Date().toISOString(),
       workspace: toWorkspace(workspaceResult.data as WorkspaceRow),
@@ -2111,6 +2159,7 @@ export class SupabaseStore implements DataStore {
         workspace_id: team.workspaceId,
         team_id: task.teamId ?? null,
         source: task.source,
+        kind: task.kind ?? 'task',
         jira_issue_id: task.jiraIssueId ?? null,
         jira_key: task.jiraKey ?? null,
         title: task.title,
@@ -2124,6 +2173,12 @@ export class SupabaseStore implements DataStore {
       if (error) throw new Error(error.message);
     }
 
+    const recurrenceRows = (params.backup.recurrences ?? []).filter((rule) => restoredTeamIds.has(rule.teamId))
+      .map((rule) => recurrenceToRow({ ...rule, workspaceId: team.workspaceId }));
+    if (recurrenceRows.length) {
+      const { error } = await this.client.from('assignment_recurrences').insert(recurrenceRows);
+      if (error) throw new Error(error.message);
+    }
     const assignmentRows: AssignmentRow[] = (params.backup.assignments ?? [])
       .filter((assignment) => restoredTeamIds.has(assignment.teamId))
       .map((assignment) => toAssignmentRow({ ...assignment, workspaceId: team.workspaceId }));
